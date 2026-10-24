@@ -15,12 +15,24 @@ import (
 
 // Evidence describes how a component was identified, not its trustworthiness.
 type Evidence struct {
-	Kind      string `json:"kind"`
-	Collector string `json:"collector"`
-	Location  string `json:"location,omitempty"`
-	Line      int    `json:"line,omitempty"`
-	Symbol    string `json:"symbol,omitempty"`
-	Time      string `json:"time,omitempty"`
+	Kind       string              `json:"kind"`
+	Collector  string              `json:"collector"`
+	Location   string              `json:"location,omitempty"`
+	Line       int                 `json:"line,omitempty"`
+	Symbol     string              `json:"symbol,omitempty"`
+	Time       string              `json:"time,omitempty"`
+	Parameters []ParameterEvidence `json:"parameters,omitempty"`
+}
+
+// ParameterEvidence records a scoped declaration without asserting a runtime value.
+type ParameterEvidence struct {
+	Name       string `json:"name"`
+	Value      string `json:"value"`
+	Basis      string `json:"basis"`
+	Location   string `json:"location"`
+	Line       int    `json:"line,omitempty"`
+	Symbol     string `json:"symbol,omitempty"`
+	Limitation string `json:"limitation"`
 }
 
 // Diagnostic records an analysis limitation without evaluating cryptographic policy.

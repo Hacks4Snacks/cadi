@@ -149,6 +149,7 @@ do not create fictitious cryptographic assets.
 | `ssh.FingerprintSHA256`                                  | SHA-256 digest for fingerprinting, not an SSH signature algorithm    |
 | `ssh.MarshalAuthorizedKey`                               | Public-key serialization; no key material exported                  |
 | `rsa.PrivateKey.Validate`                                | Structural private-key check; no validity or compliance verdict     |
+| `x509.CertificateRequest.CheckSignature`                 | CSR self-signature verification; no assumed algorithm or outcome    |
 | `x509.Certificate.Equal`                                 | Certificate identity comparison; no new asset                       |
 | `x509.CertPool.AppendCertsFromPEM`                        | Certificate import; actual certificates and trust remain unknown    |
 | `tls.Conn.Handshake`, `HandshakeContext`                 | Configured TLS handshake, not observed protocol/cipher negotiation   |
@@ -177,6 +178,14 @@ Parameter resolution includes integer constants, supported arithmetic, fixed
 byte-array/slice lengths, equal-valued branches, and bounded propagation through
 unexported non-escaping local functions. Exported parameters, ambiguous callers,
 opaque interfaces, unsupported flows, and dynamic values remain unknown.
+For RSA generation through receiver fields, explicit integer field initializers
+are recorded as qualified alternatives rather than unconditional key sizes.
+They are matched by field/type identity and retain their source locations.
+For example, a factory assigning 4096 bits adds
+`ciphertrail:key-size-bits:declared = 4096` and a `field-initializer` parameter
+fact, while `ciphertrail:key-size-bits` remains `unknown` on an unconstrained
+method. Zero-value receivers, later mutation, other constructions, and whether
+the factory is ever called are not proven away.
 Cipher-mode findings do not currently resolve their underlying block cipher.
 TLS struct initializers record explicit minimum/maximum versions, client-auth
 mode, and peer-verification configuration; subsequent mutations and implicit
@@ -204,9 +213,20 @@ secret name, common name, and CA flag.
 
 Constant fields and bounded, unambiguous initializer/copy patterns are resolved,
 including private-key struct copies and `metav1.Duration` values. The resolver
-rejects detected mutations, escapes, and multiple assignments; it does not
-follow exported globals or arbitrary function returns. Unresolved settings
-remain unknown. No cert-manager defaults are assumed. Declaration evidence does not
+can follow zero-argument, receiverless helpers with a single return statement
+across selected source packages. Copies of private immutable settings can
+resolve directly. Detected mutations, escapes, multiple assignments, parameterized
+or branched helpers, recursion, and excluded definitions remain unresolved.
+
+Exported mutable configuration is not treated as a guaranteed use-site value.
+Where its initializer can be traced, `:declared` properties and structured
+parameter evidence record the declared settings with their origins and
+limitations. A private-key use site can link to its typed definition using a
+`declaredPolicy` relationship; this means configuration provenance, not a policy
+engine or compliance verdict. Imported variables without selected source
+initializers remain unknown, even if their names resemble constants (such as
+cert-manager's `RotationPolicyAlways`). No cert-manager defaults are assumed.
+Declaration evidence does not
 prove that a certificate was issued, deployed, or used; actual serial numbers,
 validity timestamps, and fingerprints require artifact or runtime evidence.
 
@@ -265,29 +285,65 @@ These rules apply only to `--source` collection. They do not filter explicit
 `--file`, `--image`, TLS, or SSH inputs: fixture material actually packaged or
 deployed in those targets is still relevant inventory.
 
-### Offline, read-only source collection
+### Dependency preparation and read-only analysis
 
-Prepare dependencies on the team's normal trusted build agent before scanning:
+Source scans automatically prepare missing dependencies by default. Each
+selected module is first checked against the local cache. If modules or
+checksums are missing, CipherTrail prepares the selected packages using the
+existing Go proxy, private-module, checksum-service, and VCS authentication
+settings, then retries source analysis offline.
 
 ```sh
-cd /path/to/target-module
-go mod download
-/path/to/ciphertrail scan --source . --output cbom.json
+./bin/ciphertrail scan --source /path/to/repository --output cbom.json
 ```
 
-CipherTrail disables module proxies, direct module downloads, toolchain
-downloads, and external package drivers during source analysis. It uses
-`-mod=readonly`. Workspaces are honored through isolated temporary copies so
-the Go command cannot update the target's `go.work.sum`.
+Standalone modules use isolated alternate `go.mod`/`go.sum` files for dependency
+preparation. Workspaces use an isolated `go.work`/`go.work.sum` and read-only
+manifest overlays; package-aware preparation honors local workspace members.
+Preparation does not run `go mod download all`, which can request unused
+transitive versions and placeholders unrelated to the selected packages.
+Local replacements continue to resolve against their original directories.
+The target's manifests and checksum files are not modified. Preparation stops
+rather than silently changing module requirements. It does not run tests,
+`go generate`, or the target application.
 
-Each nested module has its own dependency versions. Preparing dependencies only
-in the repository root does not necessarily populate the cache for modules under
-image, tool, or service directories. Run the repository's normal dependency
-preparation (typically `go mod download`) in each module that will be scanned.
-This preparation may use your configured private feeds and credentials; the
-subsequent CipherTrail scan remains offline.
+Configure `GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, and authentication as for a normal
+Go build before scanning private repositories. CipherTrail preserves these
+settings during preparation; it does not invent credentials or upload source
+to a scanning service. Go/VCS interactive password prompts and automatic Go
+toolchain downloads are disabled. Preparation is bounded to ten minutes per
+attempt and respects cancellation.
 
-If a module cannot load, CipherTrail groups failures by safe cause and reports
+Use `--offline` for strict cache-only operation:
+
+```sh
+./bin/ciphertrail scan --source /path/to/repository --offline --output cbom.json
+```
+
+In this mode, dependencies and checksums must be available locally. Isolated
+checksum files can still be populated from cached modules, but network lookup
+is disabled. `--offline` cannot be combined with TLS/SSH network probes.
+It does not modify normal local file/image collection behavior.
+
+`--include-dependencies` changes which collected components are exported.
+`--include-nested-repos` changes source discovery scope. Neither flag controls
+dependency downloads.
+
+The build target is separate from dependency availability. By default Go uses
+the host platform. For Linux-only code scanned on macOS, select its deployment
+target explicitly rather than suppressing platform-specific compilation errors:
+
+```sh
+./bin/ciphertrail scan --source /path/to/repository \
+  --goos linux --goarch amd64 --output cbom.json
+```
+
+If preparation or loading fails, the report remains incomplete and the command
+exits 1. Invalid module versions, unavailable private credentials, checksum
+failures, and incompatible local toolchains still require correction; they are
+not converted into empty successful scans.
+
+For package-load problems, CipherTrail groups failures by safe cause and reports
 the affected package count and an example location, instead of repeating a
 numeric error kind for every import. For example, `module lookup disabled by
 GOPROXY=off` means the offline cache is missing a required module version, not
@@ -299,13 +355,14 @@ categories, and preparation hints is retained in collection properties as
 `ciphertrail:package-load-errors`. Arbitrary compiler messages are not copied
 into reports because they can contain source literals or credential-bearing
 URLs. Unclassified failures direct you to the module's normal Go build/list
-diagnostics. Load failures still produce an incomplete report and exit 1;
-neither cache misses nor type errors are silently ignored.
+diagnostics. Collection properties record `ciphertrail:dependency-mode` and
+`ciphertrail:dependency-preparation` outcomes. Preparation metadata does not
+include credentials or proxy URLs.
 
 Loading packages can invoke the local Go compiler and native build tools to
 obtain export information, but does not run tests, `go generate`, or the target
-application. Missing cached dependencies and unsupported local toolchains
-produce explicit collection errors; source is not uploaded as a fallback.
+application. The analysis phase disables module network lookups and uses
+`-mod=readonly`; source is not uploaded as a fallback.
 
 ## Runtime interrogation
 
@@ -391,7 +448,9 @@ without network access. Standard `cryptoProperties`, software dependencies, and
 evidence occurrences carry the inventory. Namespaced properties add:
 
 - `ciphertrail:evidence`: `present`, `configured`, or `observed`, plus collector,
-  location, symbol, and observation time when applicable.
+  location, symbol, and observation time when applicable. Qualified parameter
+  facts include `name`, `value`, `basis`, source `location`/`line`, and an explicit
+  `limitation`; they do not replace unknown native parameters.
 - `ciphertrail:collection`: requested target, outcome, collector properties
   (including Go build context, analysis scope, and detailed package-load
   problems), errors, and limitations.

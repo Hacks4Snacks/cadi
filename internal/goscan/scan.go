@@ -316,7 +316,8 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 		}
 	}
 	slices.SortFunc(functions, func(a, b *ssa.Function) int { return int(a.Pos()) - int(b.Pos()) })
-	values := newValues(functions)
+	project := newDeclarationProject(root, loaded, exclusions)
+	values := newValues(functions, project)
 	for _, function := range functions {
 		for _, block := range function.Blocks {
 			for _, instruction := range block.Instrs {
@@ -339,6 +340,7 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 					Location: relative(root, position.Filename), Line: position.Line, Symbol: symbol}
 				component, matched := recognize(path, name, call.Common(), values)
 				if matched {
+					addConfiguredParameters(&component, &evidence, call.Common(), values)
 					ref := result.Add(component, evidence, parents[function.Pkg.Pkg.Path()])
 					result.DependOn(ref, parents[path])
 				} else {
@@ -351,7 +353,7 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 		}
 	}
 	for _, pkg := range loaded {
-		scanCryptoDeclarations(&result, root, pkg, parents[pkg.PkgPath], parents, exclusions)
+		scanCryptoDeclarations(&result, root, pkg, parents[pkg.PkgPath], parents, exclusions, project)
 	}
 	return result, ctx.Err()
 }
@@ -398,7 +400,7 @@ func packageLoadProblems(pkg *packages.Package) []loadProblem {
 			problem.Hint = "inspect and fix the syntax errors in this module before scanning"
 		case packages.TypeError:
 			problem.Kind, problem.Cause = "type checking", "Go type checking failed"
-			problem.Hint = "run the module's normal build checks to resolve type errors before scanning"
+			problem.Hint = "check --goos/--goarch against the intended build target and run the module's normal build checks"
 		}
 		problems = append(problems, problem)
 	}

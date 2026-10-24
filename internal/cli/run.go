@@ -259,7 +259,7 @@ func (o options) requests() []request {
 		requests = append(requests, request{"go", path, goscan.Source{
 			Path: path, GOOS: o.goos, GOARCH: o.goarch, Tags: o.tags, Exclude: o.excludes,
 			IncludeNestedRepos: o.includeNestedRepos,
-			Offline: o.offline,
+			Offline:            o.offline,
 		}})
 	}
 	for _, path := range o.files {

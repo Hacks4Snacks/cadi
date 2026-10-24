@@ -11,7 +11,13 @@ import (
 )
 
 func TestEncodeStableReferencesAndEvidence(t *testing.T) {
-	evidence := Evidence{Kind: "configured", Collector: "go", Location: "main.go", Line: 12, Symbol: "crypto/rsa.GenerateKey"}
+	evidence := Evidence{
+		Kind: "configured", Collector: "go", Location: "main.go", Line: 12, Symbol: "crypto/rsa.GenerateKey",
+		Parameters: []ParameterEvidence{{
+			Name: "key-size-bits", Value: "4096", Basis: "field-initializer", Location: "factory.go", Line: 8,
+			Symbol: "example.Generator.bits", Limitation: "zero values and other constructions remain possible",
+		}},
+	}
 	var first Result
 	parent := first.Add(cdx.Component{Type: "application", Name: "example"}, Evidence{Kind: "present"}, "")
 	algorithm := Algorithm("RSA", cdx.CryptoPrimitivePKE)
@@ -37,13 +43,24 @@ func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 		t.Fatalf("expected deduplicated components, got %d", len(*bom.Components))
 	}
 	cryptoCount := 0
+	var encodedEvidence Evidence
 	for _, component := range *bom.Components {
 		if component.Type == cdx.ComponentTypeCryptographicAsset && component.CryptoProperties != nil {
 			cryptoCount++
+			for _, property := range *component.Properties {
+				if property.Name == "ciphertrail:evidence" {
+					if err := json.Unmarshal([]byte(property.Value), &encodedEvidence); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 		}
 	}
 	if cryptoCount != 1 {
 		t.Fatal("serialization changed or dropped a cryptographic-asset component")
+	}
+	if !reflect.DeepEqual(encodedEvidence, evidence) {
+		t.Fatalf("parameter provenance was lost or rewritten: %+v", encodedEvidence)
 	}
 	if bom.SpecVersion != cdx.SpecVersion1_7 || bom.JSONSchema != "http://cyclonedx.org/schema/bom-1.7.schema.json" || !strings.Contains(string(data), "configured") {
 		t.Fatalf("missing format or evidence: %s", data)

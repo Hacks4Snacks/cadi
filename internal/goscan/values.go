@@ -6,6 +6,8 @@ import (
 	"go/token"
 	"go/types"
 
+	"ciphertrail/internal/inventory"
+
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 )
@@ -15,6 +17,8 @@ type declarationValues struct {
 	initial     map[types.Object]ast.Expr
 	assignments map[types.Object]int
 	mutable     map[types.Object]bool
+	project     *declarationProject
+	declared    bool
 }
 
 func newDeclarationValues(pkg *packages.Package) *declarationValues {
@@ -70,8 +74,10 @@ func newDeclarationValues(pkg *packages.Package) *declarationValues {
 			case *ast.ReturnStmt:
 				for _, expression := range node.Results {
 					if object := v.rootObject(expression); object != nil {
-						if _, pointer := object.Type().Underlying().(*types.Pointer); pointer {
-							v.mutable[object] = true
+						if resultType := pkg.TypesInfo.TypeOf(expression); resultType != nil {
+							if _, pointer := resultType.Underlying().(*types.Pointer); pointer {
+								v.mutable[object] = true
+							}
 						}
 					}
 				}
@@ -153,6 +159,9 @@ func (v *declarationValues) rootObject(expression ast.Expr) types.Object {
 	case *ast.StarExpr:
 		return v.rootObject(expression.X)
 	case *ast.SelectorExpr:
+		if object, ok := v.pkg.TypesInfo.ObjectOf(expression.Sel).(*types.Var); ok && !object.IsField() {
+			return object
+		}
 		return v.rootObject(expression.X)
 	case *ast.IndexExpr:
 		return v.rootObject(expression.X)
@@ -184,6 +193,13 @@ func (v *declarationValues) resolve(expression ast.Expr, seen map[types.Object]b
 	if expression == nil || depth > 16 {
 		return nil
 	}
+	if v.project != nil {
+		if owner := v.project.resolver(expression); owner != nil && owner.pkg != v.pkg {
+			context := *owner
+			context.declared = v.declared
+			return context.resolve(expression, seen, depth+1)
+		}
+	}
 	switch value := expression.(type) {
 	case *ast.ParenExpr:
 		return v.resolve(value.X, seen, depth+1)
@@ -197,7 +213,7 @@ func (v *declarationValues) resolve(expression ast.Expr, seen map[types.Object]b
 		object := v.pkg.TypesInfo.ObjectOf(value)
 		if _, variable := object.(*types.Var); variable {
 			if seen[object] || v.assignments[object] != 1 || v.mutable[object] ||
-				object.Parent() == v.pkg.Types.Scope() && object.Exported() {
+				object.Parent() == v.pkg.Types.Scope() && object.Exported() && !v.declared {
 				return nil
 			}
 			seen[object] = true
@@ -207,6 +223,22 @@ func (v *declarationValues) resolve(expression ast.Expr, seen map[types.Object]b
 	case *ast.CallExpr:
 		if v.copyAppend(value) {
 			return v.resolve(value.Args[1], seen, depth+1)
+		}
+		if v.project != nil && len(value.Args) == 0 {
+			var object types.Object
+			switch function := value.Fun.(type) {
+			case *ast.Ident:
+				object = v.pkg.TypesInfo.ObjectOf(function)
+			case *ast.SelectorExpr:
+				object = v.pkg.TypesInfo.ObjectOf(function.Sel)
+			}
+			if function, ok := object.(*types.Func); ok && !seen[function] {
+				if returned := v.project.returns[function]; returned != nil {
+					seen[function] = true
+					defer delete(seen, function)
+					return v.resolve(returned, seen, depth+1)
+				}
+			}
 		}
 	}
 	return expression
@@ -222,7 +254,13 @@ func (v *declarationValues) literal(expression ast.Expr) *ast.CompositeLit {
 }
 
 func (v *declarationValues) scalar(expression ast.Expr) constant.Value {
-	return v.pkg.TypesInfo.Types[v.expression(expression)].Value
+	expression = v.expression(expression)
+	if v.project != nil {
+		if owner := v.project.resolver(expression); owner != nil {
+			return owner.pkg.TypesInfo.Types[expression].Value
+		}
+	}
+	return v.pkg.TypesInfo.Types[expression].Value
 }
 
 func declarationFields(literal *ast.CompositeLit) map[string]ast.Expr {
@@ -242,10 +280,11 @@ func declarationFields(literal *ast.CompositeLit) map[string]ast.Expr {
 type values struct {
 	callers map[*ssa.Function][]*ssa.CallCommon
 	escaped map[*ssa.Function]bool
+	project *declarationProject
 }
 
-func newValues(functions []*ssa.Function) *values {
-	v := &values{callers: map[*ssa.Function][]*ssa.CallCommon{}, escaped: map[*ssa.Function]bool{}}
+func newValues(functions []*ssa.Function, project *declarationProject) *values {
+	v := &values{callers: map[*ssa.Function][]*ssa.CallCommon{}, escaped: map[*ssa.Function]bool{}, project: project}
 	for _, function := range functions {
 		for _, block := range function.Blocks {
 			for _, instruction := range block.Instrs {
@@ -271,6 +310,29 @@ func newValues(functions []*ssa.Function) *values {
 	return v
 }
 
+func (v *values) declaredIntegers(value ssa.Value) []inventory.ParameterEvidence {
+	var aggregate types.Type
+	var index int
+	switch value := value.(type) {
+	case *ssa.Field:
+		aggregate, index = value.X.Type(), value.Field
+	case *ssa.UnOp:
+		if field, ok := value.X.(*ssa.FieldAddr); ok && value.Op == token.MUL {
+			aggregate, index = field.X.Type(), field.Field
+		}
+	}
+	if aggregate == nil || v.project == nil {
+		return nil
+	}
+	aggregate = types.Unalias(aggregate)
+	if pointer, ok := aggregate.(*types.Pointer); ok {
+		aggregate = pointer.Elem()
+	}
+	if structure, ok := aggregate.Underlying().(*types.Struct); ok && index >= 0 && index < structure.NumFields() {
+		return v.project.fields[structure.Field(index)]
+	}
+	return nil
+}
 func (v *values) integer(value ssa.Value) (int64, bool) {
 	number := v.resolve(value, map[ssa.Value]bool{}, 0)
 	if number == nil || number.Kind() != constant.Int {

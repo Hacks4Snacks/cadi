@@ -18,8 +18,7 @@ import (
 
 const certManagerPackage = "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 
-func scanCryptoDeclarations(result *inventory.Result, root string, pkg *packages.Package, parent string, providers map[string]string, exclusions []string) {
-	var values *declarationValues
+func scanCryptoDeclarations(result *inventory.Result, root string, pkg *packages.Package, parent string, providers map[string]string, exclusions []string, project *declarationProject) {
 	for _, file := range pkg.Syntax {
 		ast.Inspect(file, func(node ast.Node) bool {
 			literal, ok := node.(*ast.CompositeLit)
@@ -45,9 +44,7 @@ func scanCryptoDeclarations(result *inventory.Result, root string, pkg *packages
 				if name != "CertificateSpec" && name != "CertificatePrivateKey" {
 					return true
 				}
-				if values == nil {
-					values = newDeclarationValues(pkg)
-				}
+				values := project.resolvers[pkg]
 				switch name {
 				case "CertificateSpec":
 					certificateConfiguration(result, literal, values, evidence, parent, providers[path])
@@ -154,8 +151,28 @@ func declarationUsages(values *declarationValues, expression ast.Expr) string {
 	return strings.Join(usages, ", ")
 }
 
+func addDeclaredParameter(component *cdx.Component, evidence *inventory.Evidence, values *declarationValues, name, exact, declared string, expression ast.Expr) {
+	if exact != "unknown" || declared == "unknown" || values.project == nil {
+		return
+	}
+	candidate := *values
+	candidate.declared = true
+	origin := candidate.expression(expression)
+	if origin == nil {
+		return
+	}
+	fact := values.project.fact(name, declared, origin)
+	if fact.Location == "" {
+		return
+	}
+	inventory.Property(component, name+":declared", declared)
+	evidence.Parameters = append(evidence.Parameters, fact)
+}
+
 func certificateConfiguration(result *inventory.Result, literal *ast.CompositeLit, values *declarationValues, evidence inventory.Evidence, parent, provider string) {
 	fields := declarationFields(literal)
+	candidate := *values
+	candidate.declared = true
 	certificate := operation("cert-manager Certificate configuration", cdx.CryptoAssetTypeCertificate)
 	certificate.CryptoProperties.CertificateProperties = &cdx.CertificateProperties{CertificateFormat: "X.509"}
 	inventory.Property(&certificate, "scope", "CertificateSpec declaration; certificate issuance, deployed contents, and runtime use are not established")
@@ -169,11 +186,21 @@ func certificateConfiguration(result *inventory.Result, literal *ast.CompositeLi
 	inventory.Property(&certificate, "cert-manager.issuer.name", declarationText(values, issuer["Name"]))
 	inventory.Property(&certificate, "cert-manager.issuer.kind", declarationText(values, issuer["Kind"]))
 	inventory.Property(&certificate, "cert-manager.issuer.group", declarationText(values, issuer["Group"]))
+	addDeclaredParameter(&certificate, &evidence, values, "cert-manager.duration", declarationDuration(values, fields["Duration"]), declarationDuration(&candidate, fields["Duration"]), fields["Duration"])
+	addDeclaredParameter(&certificate, &evidence, values, "cert-manager.renew-before", declarationDuration(values, fields["RenewBefore"]), declarationDuration(&candidate, fields["RenewBefore"]), fields["RenewBefore"])
+	addDeclaredParameter(&certificate, &evidence, values, "cert-manager.usages", declarationUsages(values, fields["Usages"]), declarationUsages(&candidate, fields["Usages"]), fields["Usages"])
+	candidateIssuer := declarationFields(candidate.literal(fields["IssuerRef"]))
+	for _, field := range []struct{ goName, property string }{
+		{"Name", "cert-manager.issuer.name"}, {"Kind", "cert-manager.issuer.kind"}, {"Group", "cert-manager.issuer.group"},
+	} {
+		addDeclaredParameter(&certificate, &evidence, values, field.property, declarationText(values, issuer[field.goName]), declarationText(&candidate, candidateIssuer[field.goName]), candidateIssuer[field.goName])
+	}
 	if privateKey := fields["PrivateKey"]; privateKey != nil {
 		keyEvidence := evidence
+		keyEvidence.Parameters = nil
 		keyEvidence.Line = values.pkg.Fset.PositionFor(privateKey.Pos(), false).Line
 		keyEvidence.Symbol = certManagerPackage + ".CertificatePrivateKey"
-		keyRef := certificateKeyConfiguration(result, values.literal(privateKey), values, keyEvidence, parent, provider)
+		keyRef := certificateKeyConfiguration(result, privateKey, values, keyEvidence, parent, provider)
 		certificate.CryptoProperties.CertificateProperties.RelatedCryptographicAssets = &[]cdx.RelatedCryptographicAsset{
 			{Type: "privateKey", Ref: keyRef},
 		}
@@ -184,8 +211,13 @@ func certificateConfiguration(result *inventory.Result, literal *ast.CompositeLi
 	result.DependOn(ref, provider)
 }
 
-func certificateKeyConfiguration(result *inventory.Result, literal *ast.CompositeLit, values *declarationValues, evidence inventory.Evidence, parent, provider string) string {
+func certificateKeyConfiguration(result *inventory.Result, expression ast.Expr, values *declarationValues, evidence inventory.Evidence, parent, provider string) string {
+	literal := values.literal(expression)
 	fields := declarationFields(literal)
+	candidate := *values
+	candidate.declared = true
+	candidateLiteral := candidate.literal(expression)
+	candidateFields := declarationFields(candidateLiteral)
 	key := keyOperation("cert-manager Private key configuration")
 	properties := key.CryptoProperties.RelatedCryptoMaterialProperties
 	algorithmName := declarationText(values, fields["Algorithm"])
@@ -194,6 +226,12 @@ func certificateKeyConfiguration(result *inventory.Result, literal *ast.Composit
 	inventory.Property(&key, "cert-manager.key-encoding", declarationText(values, fields["Encoding"]))
 	inventory.Property(&key, "cert-manager.rotation-policy", declarationText(values, fields["RotationPolicy"]))
 	inventory.Property(&key, "scope", "private-key configuration declaration; no key material or generation outcome is observed")
+	for _, field := range []struct{ goName, property string }{
+		{"Algorithm", "cert-manager.key-algorithm"}, {"Size", "cert-manager.key-size"},
+		{"Encoding", "cert-manager.key-encoding"}, {"RotationPolicy", "cert-manager.rotation-policy"},
+	} {
+		addDeclaredParameter(&key, &evidence, values, field.property, declarationText(values, fields[field.goName]), declarationText(&candidate, candidateFields[field.goName]), candidateFields[field.goName])
+	}
 	var size int
 	value := values.scalar(fields["Size"])
 	if value != nil && value.Kind() == constant.Int && integerFits(value, types.Typ[types.Int]) {
@@ -223,6 +261,16 @@ func certificateKeyConfiguration(result *inventory.Result, literal *ast.Composit
 		algorithmRef := result.Add(algorithm, evidence, parent)
 		result.DependOn(algorithmRef, provider)
 		properties.RelatedCryptographicAssets = &[]cdx.RelatedCryptographicAsset{{Type: "algorithm", Ref: algorithmRef}}
+	}
+	if literal == nil && candidateLiteral != nil && values.project != nil {
+		if owner := values.project.owners[candidateLiteral]; owner != nil {
+			position := owner.Fset.PositionFor(candidateLiteral.Pos(), false)
+			policyEvidence := inventory.Evidence{Kind: "configured", Collector: "go",
+				Location: relative(values.project.root, position.Filename), Line: position.Line,
+				Symbol: certManagerPackage + ".CertificatePrivateKey"}
+			policyRef := certificateKeyConfiguration(result, candidateLiteral, values, policyEvidence, parent, provider)
+			properties.RelatedCryptographicAssets = &[]cdx.RelatedCryptographicAsset{{Type: "declaredPolicy", Ref: policyRef}}
+		}
 	}
 	ref := result.Add(key, evidence, parent)
 	result.DependOn(ref, provider)

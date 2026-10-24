@@ -67,6 +67,12 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 		inventory.Property(&c, "key-algorithm", "RSA")
 		inventory.Property(&c, "scope", "structural key check; success, signing, and encryption are not inferred")
 		return c, true
+	case apiIdentity{"crypto/x509", "CertificateRequest", "CheckSignature"}:
+		c := inventory.Algorithm("CSR signature verification", cdx.CryptoPrimitiveSignature)
+		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionVerify}
+		inventory.Property(&c, "algorithm", "unknown: determined by the CSR at runtime")
+		inventory.Property(&c, "scope", "PKCS#10 self-signature check; validity, approval, and certificate issuance are not established")
+		return c, true
 	case apiIdentity{"golang.org/x/crypto/ssh", "", "MarshalAuthorizedKey"}:
 		return keyOperation("Public key serialization"), true
 	case apiIdentity{"golang.org/x/crypto/ssh", "Channel", "Read"},
@@ -342,6 +348,28 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 		}
 	}
 	return cdx.Component{}, false
+}
+
+func addConfiguredParameters(component *cdx.Component, evidence *inventory.Evidence, call *ssa.CallCommon, values *values) {
+	api := calledAPI(call)
+	index := -1
+	switch api {
+	case apiIdentity{"crypto/rsa", "", "GenerateKey"}:
+		index = 1
+	case apiIdentity{"crypto/rsa", "", "GenerateMultiPrimeKey"}:
+		index = 2
+	}
+	if index < 0 || index >= len(call.Args) {
+		return
+	}
+	if _, exact := values.integer(call.Args[index]); exact {
+		return
+	}
+	for _, fact := range values.declaredIntegers(call.Args[index]) {
+		fact.Name = "key-size-bits"
+		evidence.Parameters = append(evidence.Parameters, fact)
+		inventory.Property(component, "key-size-bits:declared", fact.Value)
+	}
 }
 
 func nameOfCall(call *ssa.CallCommon) string {

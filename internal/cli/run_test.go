@@ -140,6 +140,42 @@ func TestGoScanThroughCLI(t *testing.T) {
 	}
 }
 
+func TestOfflineCLISelectsDependencyMode(t *testing.T) {
+	directory := t.TempDir()
+	for name, data := range map[string]string{
+		"go.mod":  "module example.test/offlinecli\n\ngo 1.27.0\n",
+		"main.go": "package example\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"scan", "--source", directory, "--offline"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("offline CLI failed: %d %s", code, stderr.String())
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, property := range *bom.Metadata.Properties {
+		if property.Name != "ciphertrail:collection" {
+			continue
+		}
+		var collection struct{ Properties []cdx.Property }
+		if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range collection.Properties {
+			found = found || item.Name == "ciphertrail:dependency-mode" && item.Value == "offline"
+		}
+	}
+	if !found {
+		t.Fatal("CLI did not record strict offline source behavior")
+	}
+}
+
 func TestGoScanRetainsActionableUnknownAPINotes(t *testing.T) {
 	directory := t.TempDir()
 	for name, content := range map[string]string{

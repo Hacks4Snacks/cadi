@@ -103,8 +103,8 @@ func (m *moduleFiles) prepare(ctx context.Context, directory string, env []strin
 	defer cancel()
 	env = setEnv(env, "GOWORK", envValue(m.env, "GOWORK"))
 	env = setEnv(env, "GIT_TERMINAL_PROMPT", "0")
-	args := append([]string{"mod", "download", "-json"}, m.flags...)
-	args = append(args, "all")
+	args := append([]string{"list", "-deps", "-mod=mod"}, m.flags...)
+	args = append(args, patterns...)
 	if m.workspace {
 		args = append([]string{"list", "-deps", "-mod=readonly"}, m.flags...)
 		args = append(args, patterns...)
@@ -112,32 +112,11 @@ func (m *moduleFiles) prepare(ctx context.Context, directory string, env []strin
 	command := exec.CommandContext(ctx, "go", args...)
 	command.Dir, command.Env = directory, env
 	command.WaitDelay = 5 * time.Second
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
+	var stderr bytes.Buffer
+	command.Stdout, command.Stderr = io.Discard, &stderr
 	runErr := command.Run()
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("dependency preparation interrupted: %w", err)
-	}
-	var failures []error
-	decoder := json.NewDecoder(&stdout)
-	for !m.workspace {
-		var item struct {
-			Path, Version, Error string
-		}
-		if err := decoder.Decode(&item); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			if runErr == nil {
-				return fmt.Errorf("decode dependency preparation result: %w", err)
-			}
-			break
-		}
-		if item.Error != "" {
-			failures = append(failures, fmt.Errorf("%s@%s: %s", item.Path, item.Version, safeGoFailure(item.Error)))
-		}
-	}
-	if len(failures) > 0 {
-		return errors.Join(failures...)
 	}
 	if runErr != nil {
 		return fmt.Errorf("dependency preparation: %s", safeGoFailure(stderr.String()))
@@ -156,12 +135,14 @@ func (m *moduleFiles) prepare(ctx context.Context, directory string, env []strin
 
 func needsDependencyPreparation(loaded []*packages.Package, err error) bool {
 	needed := err != nil && dependencyMiss(err.Error())
+	undeclared := err != nil && strings.Contains(err.Error(), "no required module provides")
 	packages.Visit(loaded, nil, func(pkg *packages.Package) {
 		for _, problem := range pkg.Errors {
 			needed = needed || dependencyMiss(problem.Msg)
+			undeclared = undeclared || strings.Contains(problem.Msg, "no required module provides")
 		}
 	})
-	return needed
+	return needed && !undeclared
 }
 
 func dependencyMiss(message string) bool {
@@ -180,10 +161,10 @@ func safeGoFailure(message string) string {
 		return "required dependency checksums are unavailable; check the module's dependency preparation settings"
 	case strings.Contains(lower, "goproxy=off"):
 		return "required dependency is not cached and module lookup is disabled; rerun without --offline or correct the configured GOPROXY"
-	case strings.Contains(lower, "403"), strings.Contains(lower, "401"),
+	case strings.Contains(lower, "403 forbidden"), strings.Contains(lower, "401 unauthorized"),
 		strings.Contains(lower, "authentication"), strings.Contains(lower, "terminal prompts disabled"):
 		return "dependency access denied; check private-module routing and existing Go/VCS credentials"
-	case strings.Contains(lower, "404"), strings.Contains(lower, "unknown revision"):
+	case strings.Contains(lower, "404 not found"), strings.Contains(lower, "unknown revision"):
 		return "the declared module version is unavailable or access is denied; check the version and private-module credentials"
 	case strings.Contains(lower, "checksum mismatch"), strings.Contains(lower, "security error"):
 		return "dependency checksum verification failed; inspect the module's normal Go download diagnostics"

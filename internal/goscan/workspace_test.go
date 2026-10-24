@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ciphertrail/internal/inventory"
 
@@ -134,6 +136,36 @@ func TestColdCachePreparationPreservesManifests(t *testing.T) {
 	}
 }
 
+func TestPreparationDoesNotDownloadUnusedTransitivePlaceholders(t *testing.T) {
+	_, _ = coldModuleProxy(t, false)
+	directory, _ := coldModuleFixture(t, false)
+	helperMod := filepath.Join(directory, "helper", "go.mod")
+	data := []byte("module example.test/helper\n\ngo 1.27.0\nrequire example.test/unused-placeholder v0.0.0\n")
+	if err := os.WriteFile(helperMod, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Source{Path: directory}).Collect(context.Background()); err != nil {
+		t.Fatalf("package-scoped preparation fetched an unused placeholder: %v", err)
+	}
+	after, err := os.ReadFile(helperMod)
+	if err != nil || !bytes.Equal(data, after) {
+		t.Fatal("replacement module manifest changed")
+	}
+}
+
+func TestUndeclaredImportsAreNotPreparedAsLatestDependencies(t *testing.T) {
+	loaded := []*packages.Package{{
+		PkgPath: "example.test/root",
+		Errors: []packages.Error{
+			{Kind: packages.ListError, Msg: "module lookup disabled by GOPROXY=off"},
+			{Kind: packages.ListError, Msg: "no required module provides package private.example.test/undeclared"},
+		},
+	}}
+	if needsDependencyPreparation(loaded, nil) {
+		t.Fatal("preparation would attempt to repair an undeclared import")
+	}
+}
+
 func TestPreparationFailureIsExplicitAndPrivate(t *testing.T) {
 	_, requests := coldModuleProxy(t, true)
 	directory, _ := coldModuleFixture(t, false)
@@ -144,6 +176,71 @@ func TestPreparationFailureIsExplicitAndPrivate(t *testing.T) {
 	data, encodeErr := inventory.Encode([]inventory.Collection{{Result: result, Err: err}})
 	if encodeErr != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") || !strings.Contains(string(data), "incomplete") {
 		t.Fatalf("unsafe or misleading failure report: %v", encodeErr)
+	}
+}
+
+func TestDependencyPreparationCanBeCancelled(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	t.Setenv("GOPROXY", server.URL)
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GONOPROXY", "none")
+	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("GOFLAGS", "-modcacherw")
+	directory, _ := coldModuleFixture(t, false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (Source{Path: directory}).Collect(ctx)
+		done <- err
+	}()
+	select {
+	case <-started:
+		cancel()
+	case err := <-done:
+		t.Fatalf("preparation exited before the proxy request: %v", err)
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("preparation never reached the proxy")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation lost: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("dependency preparation did not terminate after cancellation")
+	}
+}
+
+func TestPreparationPreservesPrivateModuleRouting(t *testing.T) {
+	t.Setenv("GOPROXY", "https://proxy.example.test")
+	t.Setenv("GOPRIVATE", "private.example.test/*")
+	t.Setenv("GONOPROXY", "private.example.test/*")
+	t.Setenv("GONOSUMDB", "private.example.test/*")
+	t.Setenv("GOSUMDB", "sum.golang.org")
+	source := Source{}
+	online, offline := source.environment(false), source.environment(true)
+	for name, want := range map[string]string{
+		"GOPROXY": "https://proxy.example.test", "GOPRIVATE": "private.example.test/*",
+		"GONOPROXY": "private.example.test/*", "GONOSUMDB": "private.example.test/*",
+		"GOSUMDB": "sum.golang.org",
+	} {
+		if envValue(online, name) != want {
+			t.Errorf("preparation changed %s", name)
+		}
+	}
+	if envValue(offline, "GOPROXY") != "off" || envValue(offline, "GONOPROXY") != "none" ||
+		envValue(online, "GOTOOLCHAIN") != "local" || envValue(online, "GOPACKAGESDRIVER") != "off" {
+		t.Fatal("dependency network/toolchain safeguards were not preserved")
 	}
 }
 

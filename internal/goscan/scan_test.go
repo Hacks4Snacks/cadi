@@ -599,6 +599,317 @@ var D = cm.CertificatePrivateKey{}
 	}
 }
 
+func TestCSRSignatureCheckIsVerificationNotIssuance(t *testing.T) {
+	directory := fixture(t, `package example
+import "crypto/x509"
+func Check(request *x509.CertificateRequest) error { return request.CheckSignature() }
+`)
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err != nil || len(result.Diagnostics) != 0 {
+		t.Fatalf("CSR check remains unmodeled: %v %+v", err, result.Diagnostics)
+	}
+	found := false
+	for _, entry := range result.Entries {
+		if strings.Contains(entry.Evidence.Symbol, "CertificateRequest).CheckSignature") {
+			found = true
+			a := entry.Component.CryptoProperties.AlgorithmProperties
+			if a == nil || a.Primitive != cdx.CryptoPrimitiveSignature || a.CryptoFunctions == nil ||
+				len(*a.CryptoFunctions) != 1 || (*a.CryptoFunctions)[0] != cdx.CryptoFunctionVerify ||
+				a.ParameterSetIdentifier != "" || entry.Evidence.Kind != "configured" {
+				t.Fatalf("CSR verification was misrepresented: %+v", entry)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("CSR verification finding missing")
+	}
+}
+
+func TestReceiverKeySizeHasQualifiedConstructorEvidence(t *testing.T) {
+	directory := fixture(t, `package example
+import ("crypto/rsa"; "crypto/rand")
+type Generator struct { keySize int }
+type Other struct { keySize int }
+var _ interface{} = Generator{}
+func New() Generator { return Generator{keySize:4096} }
+func Unrelated() Other { return Other{keySize:1024} }
+func (g Generator) Generate() { _, _ = rsa.GenerateKey(rand.Reader, g.keySize) }
+`)
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range result.Entries {
+		if entry.Component.Name != "RSA" {
+			continue
+		}
+		found = true
+		if entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+			t.Fatal("an unconstrained exported receiver was given an unconditional key size")
+		}
+		if len(entry.Evidence.Parameters) != 1 {
+			t.Fatalf("missing constructor evidence: %+v", entry.Evidence)
+		}
+		fact := entry.Evidence.Parameters[0]
+		if fact.Name != "key-size-bits" || fact.Value != "4096" || fact.Basis != "field-initializer" ||
+			!strings.HasSuffix(fact.Symbol, ".Generator.keySize") ||
+			fact.Location != "main.go" || fact.Line == 0 || fact.Limitation == "" {
+			t.Fatalf("incorrect or unqualified field inference: %+v", fact)
+		}
+	}
+	if !found {
+		t.Fatal("RSA call was lost")
+	}
+}
+
+func TestCopiedExportedPolicyHasQualifiedDefinitionEvidence(t *testing.T) {
+	directory := certificateFixture(t, `package example
+import (cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"; "example.test/fixture/policy")
+func Build() cm.CertificateSpec { key := policy.CopyKey(); duration := policy.CopyDuration(); return cm.CertificateSpec{PrivateKey:&key,Duration:&duration} }
+`)
+	policy := filepath.Join(directory, "policy")
+	if err := os.Mkdir(policy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(policy, "policy.go"), []byte(`package policy
+import ("time"; cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1")
+const bits = 256
+var Rotation = cm.RotationPolicyAlways
+var Key = &cm.CertificatePrivateKey{Algorithm:"ECDSA",Size:bits,RotationPolicy:Rotation}
+var Duration = &cm.Duration{Duration:30*24*time.Hour}
+func CopyKey() cm.CertificatePrivateKey { return *Key }
+func CopyDuration() cm.Duration { return *Duration }
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	components := map[string]cdx.Component{}
+	for _, entry := range result.Entries {
+		components[entry.Component.BOMRef] = entry.Component
+	}
+	var keyFound, durationFound, rotationFound bool
+	for _, entry := range result.Entries {
+		if entry.Evidence.Location != "main.go" {
+			continue
+		}
+		for _, fact := range entry.Evidence.Parameters {
+			if fact.Location != "policy/policy.go" || fact.Limitation == "" {
+				t.Fatalf("missing policy origin/uncertainty: %+v", fact)
+			}
+			keyFound = keyFound || fact.Name == "cert-manager.key-size" && fact.Value == "256"
+			durationFound = durationFound || fact.Name == "cert-manager.duration" && fact.Value == "720h0m0s"
+			rotationFound = rotationFound || fact.Name == "cert-manager.rotation-policy" && fact.Value == "Always"
+			if entry.Component.Name == "cert-manager Private key configuration" && fact.Name == "cert-manager.duration" {
+				t.Fatal("certificate lifetime evidence leaked into the private-key finding")
+			}
+		}
+		if entry.Component.Name == "cert-manager Private key configuration" {
+			key := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties
+			if key.Size != nil || key.RelatedCryptographicAssets == nil {
+				t.Fatal("mutable policy was treated as certain or its definition link was lost")
+			}
+			relation := (*key.RelatedCryptographicAssets)[0]
+			if relation.Type != "declaredPolicy" || components[relation.Ref].CryptoProperties.RelatedCryptoMaterialProperties.Size == nil {
+				t.Fatal("declared policy was not linked to its typed definition")
+			}
+		}
+	}
+	if !keyFound || !durationFound || !rotationFound {
+		t.Fatalf("unresolved declared settings: key=%v duration=%v rotation=%v", keyFound, durationFound, rotationFound)
+	}
+	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReceiverKeySizeCandidatesHonorScopeAndKeepAlternatives(t *testing.T) {
+	directory := fixture(t, `package example
+import ("crypto/rsa"; "crypto/rand")
+type Generator struct { keySize int }
+type Other struct { keySize int }
+func First() *Generator { return &Generator{keySize:4096} }
+func Second() Generator { return Generator{keySize:3072} }
+func Zero() Generator { return Generator{} }
+func Unrelated() Other { return Other{keySize:1024} }
+func Change(g *Generator) { g.keySize = 2048 }
+func (g *Generator) Generate() { _, _ = rsa.GenerateKey(rand.Reader, g.keySize) }
+`)
+	for name, code := range map[string]string{
+		"excluded.go": `package example; var excluded = Generator{keySize:8192}`,
+		"key_test.go": `package example; var fixture = Generator{keySize:1536}`,
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(code), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := (Source{Path: directory, Exclude: []string{"excluded.go"}}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range result.Entries {
+		if entry.Component.Name != "RSA" {
+			continue
+		}
+		found = true
+		if entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+			t.Fatal("constructor alternatives or subsequent mutations were collapsed into an exact size")
+		}
+		candidates := map[string]int{}
+		for _, fact := range entry.Evidence.Parameters {
+			candidates[fact.Value]++
+			if fact.Location != "main.go" || fact.Basis != "field-initializer" || fact.Limitation == "" {
+				t.Fatalf("excluded or unqualified constructor evidence: %+v", fact)
+			}
+		}
+		if len(candidates) != 2 || candidates["4096"] != 1 || candidates["3072"] != 1 {
+			t.Fatalf("missing alternatives or unrelated constructors included: %v", candidates)
+		}
+	}
+	if !found {
+		t.Fatal("pointer-receiver RSA operation disappeared")
+	}
+}
+
+func TestPurePrivatePolicyGettersResolveAcrossPackages(t *testing.T) {
+	directory := certificateFixture(t, `package example
+import (cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"; "example.test/fixture/policy")
+func Build() cm.CertificateSpec {
+ key := policy.CopyKey()
+ duration := policy.CopyDuration()
+ return cm.CertificateSpec{PrivateKey:&key,Duration:&duration,Usages:policy.CopyUsages()}
+}
+`)
+	policy := filepath.Join(directory, "policy")
+	if err := os.Mkdir(policy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(policy, "policy.go"), []byte(`package policy
+import ("time"; cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1")
+var rotation = cm.RotationPolicyAlways
+var key = &cm.CertificatePrivateKey{Algorithm:"ECDSA",Size:256,RotationPolicy:rotation}
+var duration = &cm.Duration{Duration:30*24*time.Hour}
+var usages = []cm.KeyUsage{cm.UsageDigitalSignature}
+func CopyKey() cm.CertificatePrivateKey { return *key }
+func CopyDuration() cm.Duration { return *duration }
+func CopyUsages() []cm.KeyUsage { return append([]cm.KeyUsage(nil), usages...) }
+func MutateCopy() { copy := CopyKey(); copy.Size = 384 }
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keyFound, durationFound, usageFound bool
+	for _, entry := range result.Entries {
+		if entry.Evidence.Location != "main.go" {
+			continue
+		}
+		if entry.Component.Name == "cert-manager Private key configuration" {
+			key := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties
+			keyFound = key.Size != nil && *key.Size == 256 && len(entry.Evidence.Parameters) == 0
+		}
+		if entry.Component.Name == "cert-manager Certificate configuration" {
+			for _, property := range *entry.Component.Properties {
+				durationFound = durationFound || property.Name == "ciphertrail:cert-manager.duration" && property.Value == "720h0m0s"
+				usageFound = usageFound || property.Name == "ciphertrail:cert-manager.usages" && property.Value == "digital signature"
+			}
+		}
+	}
+	if !keyFound || !durationFound || !usageFound {
+		t.Fatalf("private immutable getters did not resolve: key=%v duration=%v usage=%v", keyFound, durationFound, usageFound)
+	}
+}
+
+func TestPolicyGettersRejectMutationUnsupportedFlowsAndExcludedOrigins(t *testing.T) {
+	for _, test := range []struct {
+		name, helper, extra, caller string
+		exclude                     []string
+		private                     bool
+	}{
+		{name: "cross-package-field-write", extra: `func Mutate() { policy.Key.Size = 4096 }`},
+		{name: "cross-package-reassignment", extra: `func Mutate() { policy.Key = &cm.CertificatePrivateKey{Algorithm:"RSA",Size:4096} }`},
+		{name: "cross-package-escape", extra: `func Escape() *cm.CertificatePrivateKey { return policy.Key }`},
+		{name: "cross-package-alias-write", extra: `func Mutate() { alias := policy.Key; alias.Size = 4096 }`},
+		{name: "branched-helper", helper: `func CopyKey() cm.CertificatePrivateKey { if Key == nil { return cm.CertificatePrivateKey{} }; return *Key }`},
+		{name: "side-effecting-helper", helper: `func CopyKey() cm.CertificatePrivateKey { Key.Size = 4096; return *Key }`},
+		{name: "recursive-helper", helper: `func CopyKey() cm.CertificatePrivateKey { return again() }; func again() cm.CertificatePrivateKey { return CopyKey() }`},
+		{name: "parameterized-helper", helper: `func CopyKey(n int) cm.CertificatePrivateKey { return *Key }`, caller: `policy.CopyKey(1)`},
+		{name: "method-helper", helper: `type Factory struct{}; func (Factory) CopyKey() cm.CertificatePrivateKey { return *Key }`, caller: `policy.Factory{}.CopyKey()`},
+		{name: "excluded-getter", exclude: []string{"policy/getter.go"}},
+		{name: "excluded-initializer", exclude: []string{"policy/definition.go"}},
+		{name: "excluded-private-initializer", exclude: []string{"policy/definition.go"}, private: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caller := test.caller
+			if caller == "" {
+				caller = "policy.CopyKey()"
+			}
+			directory := certificateFixture(t, `package example
+import (cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"; "example.test/fixture/policy")
+func Build() cm.CertificateSpec { key := `+caller+`; return cm.CertificateSpec{PrivateKey:&key} }
+`+test.extra)
+			policy := filepath.Join(directory, "policy")
+			if err := os.Mkdir(policy, 0700); err != nil {
+				t.Fatal(err)
+			}
+			helper := test.helper
+			if helper == "" {
+				helper = "func CopyKey() cm.CertificatePrivateKey { return *Key }"
+			}
+			for name, code := range map[string]string{
+				"definition.go": `var Key = &cm.CertificatePrivateKey{Algorithm:"ECDSA",Size:256,RotationPolicy:"EXCLUDED_ORIGIN_SENTINEL"}`,
+				"getter.go":     helper,
+			} {
+				content := `package policy; import cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"; ` + code
+				if test.private {
+					content = strings.ReplaceAll(content, " Key", " key")
+					content = strings.ReplaceAll(content, "*Key", "*key")
+				}
+				if err := os.WriteFile(filepath.Join(policy, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := (Source{Path: directory, Exclude: test.exclude}).Collect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			components := map[string]inventory.Entry{}
+			for _, entry := range result.Entries {
+				components[entry.Component.BOMRef] = entry
+			}
+			found := false
+			for _, entry := range result.Entries {
+				if entry.Component.Name != "cert-manager Certificate configuration" || entry.Evidence.Location != "main.go" {
+					continue
+				}
+				found = true
+				ref := (*entry.Component.CryptoProperties.CertificateProperties.RelatedCryptographicAssets)[0].Ref
+				key := components[ref]
+				if key.Component.CryptoProperties.RelatedCryptoMaterialProperties.Size != nil ||
+					key.Component.CryptoProperties.RelatedCryptoMaterialProperties.RelatedCryptographicAssets != nil ||
+					len(key.Evidence.Parameters) != 0 {
+					t.Fatalf("unsafe or excluded policy resolved at use site: %+v", key)
+				}
+			}
+			if !found {
+				t.Fatal("unknown certificate configuration was lost")
+			}
+			if strings.HasSuffix(test.name, "initializer") {
+				data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+				if err != nil || strings.Contains(string(data), "EXCLUDED_ORIGIN_SENTINEL") {
+					t.Fatalf("excluded initializer leaked into report: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestSSHSessionChannelAndAuthenticationAPIs(t *testing.T) {
 	directory := fixture(t, `package example
 import ("crypto"; "crypto/rsa"; "golang.org/x/crypto/ssh")
