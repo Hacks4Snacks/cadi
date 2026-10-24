@@ -1,0 +1,398 @@
+package goscan
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"ciphertrail/internal/inventory"
+
+	"golang.org/x/tools/go/packages"
+)
+
+func coldModuleProxy(t *testing.T, deny bool) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	const mod = "module example.test/colddep\n\ngo 1.27.0\n"
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for name, data := range map[string]string{"go.mod": mod, "dep.go": "package colddep\nfunc Use() {}\n"} {
+		file, err := writer.Create("example.test/colddep@v1.0.0/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if deny {
+			http.Error(w, "PRIVATE_SENTINEL", http.StatusForbidden)
+			return
+		}
+		switch r.URL.Path {
+		case "/example.test/colddep/@v/v1.0.0.mod":
+			fmt.Fprint(w, mod)
+		case "/example.test/colddep/@v/v1.0.0.info":
+			fmt.Fprint(w, `{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}`)
+		case "/example.test/colddep/@v/v1.0.0.zip":
+			w.Write(archive.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("GOPROXY", server.URL)
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "none")
+	t.Setenv("GONOSUMDB", "")
+	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("GOFLAGS", "-modcacherw")
+	return server, &requests
+}
+
+func coldModuleFixture(t *testing.T, workspace bool) (string, map[string][]byte) {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "helper"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	mod := "module example.test/root\n\ngo 1.27.0\nrequire example.test/colddep v1.0.0\n"
+	files := map[string][]byte{
+		"root.go":          []byte("package root\nimport (\"crypto/sha256\"; \"example.test/colddep\"; \"example.test/helper\")\nfunc Run() { _ = sha256.Sum256(nil); colddep.Use(); helper.Use() }\n"),
+		"helper/go.mod":    []byte("module example.test/helper\n\ngo 1.27.0\n"),
+		"helper/helper.go": []byte("package helper\nfunc Use() {}\n"),
+	}
+	if workspace {
+		files["go.work"] = []byte("go 1.27.0\nuse (\n.\n./helper\n)\n")
+	} else {
+		mod += "require example.test/helper v0.0.0\nreplace example.test/helper => ./helper\n"
+	}
+	files["go.mod"] = []byte(mod)
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return directory, files
+}
+
+func TestColdCachePreparationPreservesManifests(t *testing.T) {
+	for _, workspace := range []bool{false, true} {
+		t.Run(fmt.Sprintf("workspace=%v", workspace), func(t *testing.T) {
+			_, requests := coldModuleProxy(t, false)
+			directory, originals := coldModuleFixture(t, workspace)
+			if _, err := (Source{Path: directory, Offline: true}).Collect(context.Background()); err == nil {
+				t.Fatal("cold offline scan unexpectedly succeeded")
+			}
+			if requests.Load() != 0 {
+				t.Fatal("offline scan made a network request")
+			}
+			result, err := (Source{Path: directory}).Collect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if requests.Load() == 0 {
+				t.Fatal("automatic preparation did not fetch the missing declared dependency")
+			}
+			if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+				t.Fatal(err)
+			}
+			for name, before := range originals {
+				after, err := os.ReadFile(filepath.Join(directory, name))
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("source input changed: %s", name)
+				}
+			}
+			for _, sum := range []string{"go.sum", "go.work.sum", "helper/go.sum"} {
+				if _, err := os.Stat(filepath.Join(directory, sum)); !os.IsNotExist(err) {
+					t.Fatalf("created target checksum file: %s", sum)
+				}
+			}
+			before := requests.Load()
+			if _, err := (Source{Path: directory, Offline: true}).Collect(context.Background()); err != nil {
+				t.Fatalf("prepared cache could not be reused offline: %v", err)
+			}
+			if requests.Load() != before {
+				t.Fatal("offline cache reuse accessed the proxy")
+			}
+		})
+	}
+}
+
+func TestPreparationFailureIsExplicitAndPrivate(t *testing.T) {
+	_, requests := coldModuleProxy(t, true)
+	directory, _ := coldModuleFixture(t, false)
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err == nil || requests.Load() == 0 {
+		t.Fatalf("preparation failure was not exercised: %v", err)
+	}
+	data, encodeErr := inventory.Encode([]inventory.Collection{{Result: result, Err: err}})
+	if encodeErr != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") || !strings.Contains(string(data), "incomplete") {
+		t.Fatalf("unsafe or misleading failure report: %v", encodeErr)
+	}
+}
+
+func TestWorkspaceIsHonoredWithoutModifyingInputs(t *testing.T) {
+	directory := fixture(t, `package example
+import "example.test/nested"
+func Run() { nested.Run() }
+`)
+	if err := os.Mkdir(filepath.Join(directory, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"go.work":        []byte("go 1.27.0\nuse (\n.\n./nested\n)\n"),
+		"nested/go.mod":  []byte("module example.test/nested\n\ngo 1.27.0\n"),
+		"nested/hash.go": []byte("package nested; import \"crypto/sha256\"; func Run() { _ = sha256.Sum256(nil) }\n"),
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), contents, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(directory, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = data
+	}
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range result.Entries {
+		found = found || entry.Component.Name == "SHA-256"
+	}
+	if !found {
+		t.Fatal("workspace dependency not inventoried")
+	}
+	for name, before := range files {
+		after, err := os.ReadFile(filepath.Join(directory, name))
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("scan modified %s", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(directory, "go.work.sum")); !os.IsNotExist(err) {
+		t.Fatal("scanner created a checksum file in the source workspace")
+	}
+}
+
+func TestOfflineLoadErrorsAreGroupedWithDetailedMetadata(t *testing.T) {
+	var problems []loadProblem
+	for _, path := range []string{"k8s.io/api/core/v1", "k8s.io/api/apps/v1", "k8s.io/client-go/rest"} {
+		problems = append(problems, packageLoadProblems(&packages.Package{
+			PkgPath: path, Errors: []packages.Error{{Kind: packages.ListError, Msg: "module lookup disabled by GOPROXY=off", Pos: "main.go:7:2"}},
+		})...)
+	}
+	var result inventory.Result
+	err := reportLoadProblems(&result, "images/example", problems)
+	if err == nil || !strings.Contains(err.Error(), "3 packages") || !strings.Contains(err.Error(), "GOPROXY=off") ||
+		!strings.Contains(err.Error(), "go mod download") || strings.Contains(err.Error(), "kind 1") || strings.Contains(err.Error(), "\n") {
+		t.Fatalf("unhelpful or ungrouped loader error: %v", err)
+	}
+	if len(result.Properties) != 1 || result.Properties[0].Name != "ciphertrail:package-load-errors" {
+		t.Fatal("detailed package errors were not retained")
+	}
+	var details []loadProblem
+	if err := json.Unmarshal([]byte(result.Properties[0].Value), &details); err != nil {
+		t.Fatal(err)
+	}
+	if len(details) != 3 {
+		t.Fatalf("lost affected packages: %+v", details)
+	}
+	data, encodeErr := inventory.Encode([]inventory.Collection{{Collector: "go", Result: result, Err: err}})
+	if encodeErr != nil || !strings.Contains(string(data), "incomplete") {
+		t.Fatalf("loader failure was not preserved: %v", encodeErr)
+	}
+}
+
+func TestLoaderCausesDoNotExposeSourceOrCredentials(t *testing.T) {
+	for _, tt := range []struct {
+		kind          packages.ErrorKind
+		message, want string
+	}{
+		{packages.ListError, "missing go.sum entry for module providing package x", "checksum"},
+		{packages.ListError, "updates to go.mod needed, disabled by -mod=readonly", "module metadata"},
+		{packages.ListError, "no required module provides package x", "required module"},
+		{packages.TypeError, `cannot use "PRIVATE_SENTINEL" as int`, "type checking"},
+		{packages.ParseError, `unexpected "PRIVATE_SENTINEL"`, "syntax"},
+		{packages.UnknownError, "https://user:PRIVATE_SENTINEL@example.test", "loading"},
+	} {
+		var result inventory.Result
+		err := reportLoadProblems(&result, ".", packageLoadProblems(&packages.Package{
+			PkgPath: "example.test/project", Errors: []packages.Error{{Kind: tt.kind, Msg: tt.message, Pos: "main.go:3"}},
+		}))
+		if err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Fatalf("wrong loader cause for %v: %v", tt.kind, err)
+		}
+		data, encodeErr := inventory.Encode([]inventory.Collection{{Result: result, Err: err}})
+		if encodeErr != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") {
+			t.Fatalf("unsafe loader output: %v", encodeErr)
+		}
+	}
+}
+
+func TestSourceExclusionsAreLiteralRootRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".ciphertrailignore"), []byte("# comment\n\n./internal/testutil/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	exclusions, err := loadExclusions(root, []string{"fixtures.go", "internal/testutil"})
+	if err != nil || len(exclusions) != 2 {
+		t.Fatalf("exclusion composition failed: %v %v", exclusions, err)
+	}
+	for _, tt := range []struct {
+		path     string
+		excluded bool
+	}{
+		{"internal/testutil/crypto.go", true},
+		{"internal/testutil", true},
+		{"fixtures.go", true},
+		{"fixtures.go.bak", false},
+		{"internal/testutilities/crypto.go", false},
+		{"other/internal/testutil/crypto.go", false},
+	} {
+		if got := sourcePathExcluded(root, filepath.Join(root, tt.path), exclusions); got != tt.excluded {
+			t.Errorf("%s: excluded=%v", tt.path, got)
+		}
+	}
+	for _, invalid := range []string{"", ".", "..", "../secret", "/absolute", "a/../b", "**/testutil", "!keep", "a\\b", "https://example.test/path"} {
+		if _, err := loadExclusions(root, []string{invalid}); err == nil {
+			t.Errorf("invalid exclusion accepted: %q", invalid)
+		}
+	}
+}
+
+func TestInvalidIgnoreFileFailsExplicitly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".ciphertrailignore"), []byte("../outside\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadExclusions(root, nil); err == nil || !strings.Contains(err.Error(), ".ciphertrailignore:1") {
+		t.Fatalf("invalid file rule was ignored: %v", err)
+	}
+}
+
+func TestIgnoreFileCannotBeASymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "data")
+	if err := os.WriteFile(target, []byte("PRIVATE_SENTINEL"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, ".ciphertrailignore")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadExclusions(root, nil); err == nil || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
+		t.Fatalf("unsafe configuration read: %v", err)
+	}
+}
+
+func TestNestedRepositoryBoundariesAndExplicitInclusion(t *testing.T) {
+	directory := fixture(t, "package example\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n")
+	files := map[string]string{
+		"ordinary/go.mod":  "module example.test/ordinary\n\ngo 1.27.0\n",
+		"ordinary/hash.go": "package ordinary\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n",
+		"checkout/go.mod":  "module example.test/checkout\n\ngo 1.27.0\n",
+		"checkout/hash.go": "package checkout\nimport \"crypto/md5\"\nfunc Run() { _ = md5.Sum(nil) }\n",
+		"worktree/.git":    "gitdir: /not/read/by/ciphertrail\n",
+		"worktree/hash.go": "package worktree\nimport \"crypto/sha1\"\nfunc Run() { _ = sha1.Sum(nil) }\n",
+	}
+	for _, dir := range []string{".git", "checkout/.git", "ordinary", "worktree"} {
+		if err := os.MkdirAll(filepath.Join(directory, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, include := range []bool{false, true} {
+		result, err := (Source{Path: directory, IncludeNestedRepos: include}).Collect(context.Background())
+		if err != nil || len(result.Diagnostics) != 0 {
+			t.Fatalf("include=%v: %v %+v", include, err, result.Diagnostics)
+		}
+		names := map[string]bool{}
+		for _, entry := range result.Entries {
+			if entry.Component.CryptoProperties != nil {
+				names[entry.Component.Name] = true
+			}
+		}
+		if !names["SHA-256"] || !names["SHA-512"] || names["MD5"] != include || names["SHA-1"] != include {
+			t.Fatalf("incorrect boundary handling with include=%v: %v", include, names)
+		}
+		if !include {
+			recorded := false
+			for _, property := range result.Properties {
+				recorded = recorded || property.Name == "ciphertrail:excluded-nested-repositories" &&
+					strings.Contains(property.Value, "checkout") && strings.Contains(property.Value, "worktree")
+			}
+			if !recorded {
+				t.Fatal("nested repository exclusions were not recorded")
+			}
+		}
+	}
+	result, err := (Source{Path: filepath.Join(directory, "checkout")}).Collect(context.Background())
+	if err != nil || len(result.Diagnostics) != 0 {
+		t.Fatalf("explicit nested repository scan failed: %v", err)
+	}
+	found := false
+	for _, entry := range result.Entries {
+		found = found || entry.Component.Name == "MD5"
+	}
+	if !found {
+		t.Fatal("explicit scan root was incorrectly skipped")
+	}
+}
+
+func TestNestedBoundaryDoesNotHideRequiredCompilationErrors(t *testing.T) {
+	directory := fixture(t, "package example\nimport \"example.test/fixture/checkout\"\nfunc Run() { checkout.Broken() }\n")
+	checkout := filepath.Join(directory, "checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "source.go"), []byte("package checkout\nfunc Broken() { undefined() }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Source{Path: directory}).Collect(context.Background()); err == nil {
+		t.Fatal("repository boundary hid a required dependency's compilation error")
+	}
+}
+
+func TestMissingDependencyDoesNotContactProxy(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	t.Setenv("GOPROXY", server.URL)
+	t.Setenv("GONOPROXY", "*")
+	directory := fixture(t, `package example; import _ "example.invalid/ciphertrail-missing"`)
+	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte("module example.test/offline\n\ngo 1.27.0\nrequire example.invalid/ciphertrail-missing v0.0.1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Source{Path: directory, Offline: true}).Collect(context.Background()); err == nil {
+		t.Fatal("missing dependency accepted")
+	}
+	if requests.Load() != 0 {
+		t.Fatal("scanner contacted a module proxy")
+	}
+}

@@ -1,0 +1,5 @@
+CycloneDX 1.7, cryptography definitions, SPDX, and JSON Signature Format
+schemas are copied without content changes from CycloneDX/specification
+release 1.7, commit 4b3f59453366e27c8073fd24e98bf21ef8892c8e.
+Source: https://github.com/CycloneDX/specification/tree/1.7/schema
+See LICENSE for the upstream Apache-2.0 license.
