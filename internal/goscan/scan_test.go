@@ -2,8 +2,10 @@ package goscan
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -425,7 +427,8 @@ func Build(issuer, secret string) cm.Certificate {
 		}
 		if properties["ciphertrail:cert-manager.duration"] != "720h0m0s" ||
 			properties["ciphertrail:cert-manager.renew-before"] != "240h0m0s" ||
-			properties["ciphertrail:cert-manager.issuer.name"] != "unknown" ||
+			properties["ciphertrail:cert-manager.issuer.name"] != "" ||
+			!slices.Contains(entry.Evidence.Unresolved, "cert-manager.issuer.name") ||
 			properties["ciphertrail:cert-manager.issuer.kind"] != "Issuer" ||
 			!strings.Contains(properties["ciphertrail:cert-manager.usages"], "server auth") {
 			t.Fatalf("incorrect or guessed declaration settings: %v", properties)
@@ -596,6 +599,96 @@ var D = cm.CertificatePrivateKey{}
 	}
 	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCompactDeclarationsDistinguishAbsentDynamicAndLiteralValues(t *testing.T) {
+	directory := certificateFixture(t, `package example
+import ("time"; "crypto/tls"; cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1")
+var Duration = &cm.Duration{Duration:30*24*time.Hour}
+func CopyDuration() cm.Duration { return *Duration }
+func Build(commonName, secretName string) cm.CertificateSpec {
+ duration := CopyDuration()
+ return cm.CertificateSpec{
+  CommonName:commonName, SecretName:secretName, IsCA:false, Duration:&duration,
+  IssuerRef:cm.ObjectReference{Name:"unknown",Kind:"Issuer"},
+  PrivateKey:&cm.CertificatePrivateKey{Algorithm:"RSA",Size:0,Encoding:"unknown"},
+ }
+}
+func Empty() cm.CertificateSpec { return cm.CertificateSpec{} }
+func TLS(version uint16) *tls.Config { return &tls.Config{MinVersion:version,InsecureSkipVerify:false} }
+`)
+	result, err := (Source{Path: directory}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configured, empty, key, tlsConfig bool
+	for _, entry := range result.Entries {
+		p := map[string]string{}
+		if entry.Component.Properties != nil {
+			for _, property := range *entry.Component.Properties {
+				p[property.Name] = property.Value
+			}
+		}
+		if entry.Component.Name == "cert-manager Certificate configuration" {
+			if len(entry.Evidence.Parameters) != 0 {
+				configured = true
+				if p["ciphertrail:cert-manager.duration:declared"] != "720h0m0s" ||
+					p["ciphertrail:cert-manager.is-ca"] != "false" ||
+					p["ciphertrail:cert-manager.issuer.name"] != "unknown" ||
+					!slices.Contains(entry.Evidence.Unresolved, "cert-manager.common-name") ||
+					!slices.Contains(entry.Evidence.Unresolved, "cert-manager.secret-name") {
+					t.Fatalf("known or unresolved declaration values changed: %+v %v", entry.Evidence, p)
+				}
+				for _, name := range []string{"duration", "renew-before", "issuer.group", "common-name", "secret-name", "usages"} {
+					if _, exists := p["ciphertrail:cert-manager."+name]; exists {
+						t.Fatalf("absent or unresolved value placeholder retained: %s", name)
+					}
+				}
+			} else {
+				empty = true
+				if len(p) != 0 || len(entry.Evidence.Unresolved) != 0 {
+					t.Fatalf("empty initializer invented settings or unknowns: %v %+v", p, entry.Evidence)
+				}
+			}
+		}
+		if entry.Component.Name == "cert-manager Private key configuration" {
+			key = true
+			if p["ciphertrail:cert-manager.key-size"] != "0" ||
+				p["ciphertrail:cert-manager.key-encoding"] != "unknown" ||
+				len(entry.Evidence.Unresolved) != 0 {
+				t.Fatalf("literal zero/unknown value or key evidence scope changed: %v %+v", p, entry.Evidence)
+			}
+		}
+		if entry.Evidence.Symbol == "crypto/tls.Config" {
+			tlsConfig = true
+			if p["ciphertrail:tls.insecure-skip-verify"] != "false" ||
+				p["ciphertrail:tls.min-version"] != "" ||
+				!slices.Contains(entry.Evidence.Unresolved, "tls.min-version") {
+				t.Fatalf("TLS literal and dynamic values were conflated: %v %+v", p, entry.Evidence)
+			}
+		}
+	}
+	if !configured || !empty || !key || !tlsConfig {
+		t.Fatal("compact output dropped a declaration")
+	}
+	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	for _, component := range *bom.Components {
+		if component.Properties == nil {
+			continue
+		}
+		for _, property := range *component.Properties {
+			if property.Name == "ciphertrail:evidence" || property.Name == "ciphertrail:parameters" {
+				t.Fatal("duplicate evidence or generic unknown disclaimer remains")
+			}
+		}
 	}
 }
 
@@ -946,6 +1039,9 @@ func Run(client *ssh.Client, session *ssh.Session, channel ssh.Channel, key *rsa
 			for _, property := range *entry.Component.Properties {
 				auth = auth || property.Name == "ciphertrail:ssh.auth-method" && property.Value == "public-key"
 				hostKeys = hostKeys || property.Name == "ciphertrail:ssh.host-key-verification" && property.Value == "disabled"
+				if property.Name == "ciphertrail:scope" && strings.HasPrefix(property.Value, "source API use;") {
+					t.Fatal("generic source-analysis caveat was duplicated on the SSH finding")
+				}
 			}
 		}
 	}

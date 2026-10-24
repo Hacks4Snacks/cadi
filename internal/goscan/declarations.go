@@ -56,7 +56,7 @@ func scanCryptoDeclarations(result *inventory.Result, root string, pkg *packages
 			if path != "crypto/tls" || name != "Config" {
 				return true
 			}
-			component := tlsConfiguration(pkg, literal)
+			component := tlsConfiguration(pkg, literal, &evidence)
 			ref := result.Add(component, evidence, parent)
 			result.DependOn(ref, providers[path])
 			return true
@@ -64,7 +64,7 @@ func scanCryptoDeclarations(result *inventory.Result, root string, pkg *packages
 	}
 }
 
-func tlsConfiguration(pkg *packages.Package, literal *ast.CompositeLit) cdx.Component {
+func tlsConfiguration(pkg *packages.Package, literal *ast.CompositeLit, evidence *inventory.Evidence) cdx.Component {
 	component := protocol("TLS configuration", cdx.CryptoProtocolTypeTLS)
 	for _, element := range literal.Elts {
 		entry, ok := element.(*ast.KeyValueExpr)
@@ -76,15 +76,17 @@ func tlsConfiguration(pkg *packages.Package, literal *ast.CompositeLit) cdx.Comp
 			continue
 		}
 		value := pkg.TypesInfo.Types[entry.Value].Value
+		var label, text string
+		known := false
 		switch field.Name {
 		case "MinVersion", "MaxVersion":
-			label := "tls.min-version"
+			label = "tls.min-version"
 			if field.Name == "MaxVersion" {
 				label = "tls.max-version"
 			}
-			text := "unknown"
 			if value != nil {
 				if number, ok := constant.Uint64Val(value); ok && number <= 65535 {
+					known = true
 					if number == 0 {
 						text = "Go runtime default"
 					} else {
@@ -92,81 +94,89 @@ func tlsConfiguration(pkg *packages.Package, literal *ast.CompositeLit) cdx.Comp
 					}
 				}
 			}
-			inventory.Property(&component, label, text)
 		case "InsecureSkipVerify":
-			text := "unknown"
+			label = "tls.insecure-skip-verify"
 			if value != nil && value.Kind() == constant.Bool {
-				text = value.ExactString()
+				text, known = value.ExactString(), true
 			}
-			inventory.Property(&component, "tls.insecure-skip-verify", text)
 		case "ClientAuth":
-			text := "unknown"
+			label = "tls.client-auth"
 			if value != nil {
 				if number, ok := constant.Int64Val(value); ok && number >= 0 && number <= int64(tls.RequireAndVerifyClientCert) {
-					text = tls.ClientAuthType(number).String()
+					text, known = tls.ClientAuthType(number).String(), true
 				}
 			}
-			inventory.Property(&component, "tls.client-auth", text)
+		default:
+			continue
+		}
+		if known {
+			inventory.Property(&component, label, text)
+		} else {
+			evidence.Unresolved = append(evidence.Unresolved, label)
 		}
 	}
-	inventory.Property(&component, "scope", "struct initializer only; subsequent mutations and runtime defaults are not resolved")
 	return component
 }
 
-func declarationText(values *declarationValues, expression ast.Expr) string {
+func declarationText(values *declarationValues, expression ast.Expr) (string, bool) {
 	value := values.scalar(expression)
 	if value == nil {
-		return "unknown"
+		return "", false
 	}
 	if value.Kind() == constant.String {
-		return constant.StringVal(value)
+		return constant.StringVal(value), true
 	}
-	return value.ExactString()
+	return value.ExactString(), true
 }
 
-func declarationDuration(values *declarationValues, expression ast.Expr) string {
+func declarationDuration(values *declarationValues, expression ast.Expr) (string, bool) {
 	fields := declarationFields(values.literal(expression))
 	value := values.scalar(fields["Duration"])
 	if value != nil && value.Kind() == constant.Int {
 		if nanos, ok := constant.Int64Val(value); ok {
-			return time.Duration(nanos).String()
+			return time.Duration(nanos).String(), true
 		}
 	}
-	return "unknown"
+	return "", false
 }
 
-func declarationUsages(values *declarationValues, expression ast.Expr) string {
+func declarationUsages(values *declarationValues, expression ast.Expr) (string, bool) {
 	literal := values.literal(expression)
 	if literal == nil {
-		return "unknown"
+		return "", false
 	}
 	var usages []string
 	for _, element := range literal.Elts {
 		value := values.scalar(element)
 		if value == nil || value.Kind() != constant.String {
-			return "unknown"
+			return "", false
 		}
 		usages = append(usages, constant.StringVal(value))
 	}
-	return strings.Join(usages, ", ")
+	return strings.Join(usages, ", "), true
 }
 
-func addDeclaredParameter(component *cdx.Component, evidence *inventory.Evidence, values *declarationValues, name, exact, declared string, expression ast.Expr) {
-	if exact != "unknown" || declared == "unknown" || values.project == nil {
+func addDeclarationParameter(component *cdx.Component, evidence *inventory.Evidence, values *declarationValues, name string, expression, declaredExpression ast.Expr, format func(*declarationValues, ast.Expr) (string, bool)) {
+	if expression == nil && declaredExpression == nil {
+		return
+	}
+	if exact, known := format(values, expression); known {
+		inventory.Property(component, name, exact)
 		return
 	}
 	candidate := *values
 	candidate.declared = true
-	origin := candidate.expression(expression)
-	if origin == nil {
-		return
+	if declared, known := format(&candidate, declaredExpression); known && values.project != nil {
+		if origin := candidate.expression(declaredExpression); origin != nil {
+			fact := values.project.fact(name, declared, origin)
+			if fact.Location != "" {
+				inventory.Property(component, name+":declared", declared)
+				evidence.Parameters = append(evidence.Parameters, fact)
+				return
+			}
+		}
 	}
-	fact := values.project.fact(name, declared, origin)
-	if fact.Location == "" {
-		return
-	}
-	inventory.Property(component, name+":declared", declared)
-	evidence.Parameters = append(evidence.Parameters, fact)
+	evidence.Unresolved = append(evidence.Unresolved, name)
 }
 
 func certificateConfiguration(result *inventory.Result, literal *ast.CompositeLit, values *declarationValues, evidence inventory.Evidence, parent, provider string) {
@@ -175,37 +185,37 @@ func certificateConfiguration(result *inventory.Result, literal *ast.CompositeLi
 	candidate.declared = true
 	certificate := operation("cert-manager Certificate configuration", cdx.CryptoAssetTypeCertificate)
 	certificate.CryptoProperties.CertificateProperties = &cdx.CertificateProperties{CertificateFormat: "X.509"}
-	inventory.Property(&certificate, "scope", "CertificateSpec declaration; certificate issuance, deployed contents, and runtime use are not established")
-	inventory.Property(&certificate, "cert-manager.secret-name", declarationText(values, fields["SecretName"]))
-	inventory.Property(&certificate, "cert-manager.common-name", declarationText(values, fields["CommonName"]))
-	inventory.Property(&certificate, "cert-manager.is-ca", declarationText(values, fields["IsCA"]))
-	inventory.Property(&certificate, "cert-manager.duration", declarationDuration(values, fields["Duration"]))
-	inventory.Property(&certificate, "cert-manager.renew-before", declarationDuration(values, fields["RenewBefore"]))
-	inventory.Property(&certificate, "cert-manager.usages", declarationUsages(values, fields["Usages"]))
-	issuer := declarationFields(values.literal(fields["IssuerRef"]))
-	inventory.Property(&certificate, "cert-manager.issuer.name", declarationText(values, issuer["Name"]))
-	inventory.Property(&certificate, "cert-manager.issuer.kind", declarationText(values, issuer["Kind"]))
-	inventory.Property(&certificate, "cert-manager.issuer.group", declarationText(values, issuer["Group"]))
-	addDeclaredParameter(&certificate, &evidence, values, "cert-manager.duration", declarationDuration(values, fields["Duration"]), declarationDuration(&candidate, fields["Duration"]), fields["Duration"])
-	addDeclaredParameter(&certificate, &evidence, values, "cert-manager.renew-before", declarationDuration(values, fields["RenewBefore"]), declarationDuration(&candidate, fields["RenewBefore"]), fields["RenewBefore"])
-	addDeclaredParameter(&certificate, &evidence, values, "cert-manager.usages", declarationUsages(values, fields["Usages"]), declarationUsages(&candidate, fields["Usages"]), fields["Usages"])
-	candidateIssuer := declarationFields(candidate.literal(fields["IssuerRef"]))
+	for _, field := range []struct {
+		goName, property string
+		format           func(*declarationValues, ast.Expr) (string, bool)
+	}{
+		{"SecretName", "secret-name", declarationText}, {"CommonName", "common-name", declarationText},
+		{"IsCA", "is-ca", declarationText}, {"Duration", "duration", declarationDuration},
+		{"RenewBefore", "renew-before", declarationDuration}, {"Usages", "usages", declarationUsages},
+	} {
+		expression := fields[field.goName]
+		addDeclarationParameter(&certificate, &evidence, values, "cert-manager."+field.property, expression, expression, field.format)
+	}
+	issuerLiteral, candidateIssuerLiteral := values.literal(fields["IssuerRef"]), candidate.literal(fields["IssuerRef"])
+	issuer, candidateIssuer := declarationFields(issuerLiteral), declarationFields(candidateIssuerLiteral)
+	if fields["IssuerRef"] != nil && issuerLiteral == nil && candidateIssuerLiteral == nil {
+		evidence.Unresolved = append(evidence.Unresolved, "cert-manager.issuer")
+	}
 	for _, field := range []struct{ goName, property string }{
 		{"Name", "cert-manager.issuer.name"}, {"Kind", "cert-manager.issuer.kind"}, {"Group", "cert-manager.issuer.group"},
 	} {
-		addDeclaredParameter(&certificate, &evidence, values, field.property, declarationText(values, issuer[field.goName]), declarationText(&candidate, candidateIssuer[field.goName]), candidateIssuer[field.goName])
+		addDeclarationParameter(&certificate, &evidence, values, field.property, issuer[field.goName], candidateIssuer[field.goName], declarationText)
 	}
 	if privateKey := fields["PrivateKey"]; privateKey != nil {
 		keyEvidence := evidence
 		keyEvidence.Parameters = nil
+		keyEvidence.Unresolved = nil
 		keyEvidence.Line = values.pkg.Fset.PositionFor(privateKey.Pos(), false).Line
 		keyEvidence.Symbol = certManagerPackage + ".CertificatePrivateKey"
 		keyRef := certificateKeyConfiguration(result, privateKey, values, keyEvidence, parent, provider)
 		certificate.CryptoProperties.CertificateProperties.RelatedCryptographicAssets = &[]cdx.RelatedCryptographicAsset{
 			{Type: "privateKey", Ref: keyRef},
 		}
-	} else {
-		inventory.Property(&certificate, "cert-manager.private-key", "unknown: no explicit private-key configuration")
 	}
 	ref := result.Add(certificate, evidence, parent)
 	result.DependOn(ref, provider)
@@ -220,17 +230,15 @@ func certificateKeyConfiguration(result *inventory.Result, expression ast.Expr, 
 	candidateFields := declarationFields(candidateLiteral)
 	key := keyOperation("cert-manager Private key configuration")
 	properties := key.CryptoProperties.RelatedCryptoMaterialProperties
-	algorithmName := declarationText(values, fields["Algorithm"])
-	inventory.Property(&key, "cert-manager.key-algorithm", algorithmName)
-	inventory.Property(&key, "cert-manager.key-size", declarationText(values, fields["Size"]))
-	inventory.Property(&key, "cert-manager.key-encoding", declarationText(values, fields["Encoding"]))
-	inventory.Property(&key, "cert-manager.rotation-policy", declarationText(values, fields["RotationPolicy"]))
-	inventory.Property(&key, "scope", "private-key configuration declaration; no key material or generation outcome is observed")
+	algorithmName, _ := declarationText(values, fields["Algorithm"])
+	if literal == nil && candidateLiteral == nil {
+		evidence.Unresolved = append(evidence.Unresolved, "cert-manager.private-key")
+	}
 	for _, field := range []struct{ goName, property string }{
 		{"Algorithm", "cert-manager.key-algorithm"}, {"Size", "cert-manager.key-size"},
 		{"Encoding", "cert-manager.key-encoding"}, {"RotationPolicy", "cert-manager.rotation-policy"},
 	} {
-		addDeclaredParameter(&key, &evidence, values, field.property, declarationText(values, fields[field.goName]), declarationText(&candidate, candidateFields[field.goName]), candidateFields[field.goName])
+		addDeclarationParameter(&key, &evidence, values, field.property, fields[field.goName], candidateFields[field.goName], declarationText)
 	}
 	var size int
 	value := values.scalar(fields["Size"])

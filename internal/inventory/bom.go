@@ -13,6 +13,30 @@ import (
 
 func decimal(value int) string { return strconv.Itoa(value) }
 
+type provenance struct {
+	Occurrence string           `json:"occurrence,omitempty"`
+	Kind       string           `json:"kind,omitempty"`
+	Collector  string           `json:"collector,omitempty"`
+	Time       string           `json:"time,omitempty"`
+	Symbol     string           `json:"symbol,omitempty"`
+	Unresolved []string         `json:"unresolved,omitempty"`
+	Parameters []parameterGroup `json:"parameters,omitempty"`
+}
+
+type parameterGroup struct {
+	Basis      string           `json:"basis"`
+	Limitation string           `json:"limitation"`
+	Values     []parameterValue `json:"values"`
+}
+
+type parameterValue struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Location string `json:"location"`
+	Line     int    `json:"line,omitempty"`
+	Symbol   string `json:"symbol,omitempty"`
+}
+
 // EncodeOptions controls inventory scope, not cryptographic policy.
 type EncodeOptions struct {
 	IncludeDependencies bool
@@ -79,18 +103,8 @@ func EncodeWithOptions(collections []Collection, options EncodeOptions) ([]byte,
 				}
 				*component.Properties = append(*component.Properties, *entry.Component.Properties...)
 			}
-			evidence, err := json.Marshal(entry.Evidence)
-			if err != nil {
-				return nil, fmt.Errorf("encode evidence: %w", err)
-			}
-			Property(component, "evidence", string(evidence))
-			if entry.Evidence.Location != "" {
-				occurrence := cdx.EvidenceOccurrence{Location: entry.Evidence.Location, Symbol: entry.Evidence.Symbol}
-				if entry.Evidence.Line > 0 {
-					line := entry.Evidence.Line
-					occurrence.Line = &line
-				}
-				*component.Evidence.Occurrences = append(*component.Evidence.Occurrences, occurrence)
+			if err := appendProvenance(component, entry.Evidence); err != nil {
+				return nil, err
 			}
 			if edges[ref] == nil {
 				edges[ref] = make(map[string]bool)
@@ -292,6 +306,68 @@ func cryptoReferences(component *cdx.Component) []string {
 		}
 	}
 	return refs
+}
+
+func appendProvenance(component *cdx.Component, evidence Evidence) error {
+	record := provenance{Kind: evidence.Kind, Collector: evidence.Collector, Time: evidence.Time}
+	if evidence.Location != "" {
+		occurrence := cdx.EvidenceOccurrence{Location: evidence.Location, Symbol: evidence.Symbol}
+		if evidence.Line > 0 {
+			line := evidence.Line
+			occurrence.Line = &line
+		}
+		occurrence.BOMRef = Ref("occurrence", component.BOMRef, occurrenceKey(occurrence))
+		record.Occurrence = occurrence.BOMRef
+		*component.Evidence.Occurrences = append(*component.Evidence.Occurrences, occurrence)
+	} else {
+		record.Symbol = evidence.Symbol
+	}
+	declared := map[string]bool{}
+	for _, fact := range evidence.Parameters {
+		declared[fact.Name] = true
+		index := slices.IndexFunc(record.Parameters, func(group parameterGroup) bool {
+			return group.Basis == fact.Basis && group.Limitation == fact.Limitation
+		})
+		if index < 0 {
+			index = len(record.Parameters)
+			record.Parameters = append(record.Parameters, parameterGroup{Basis: fact.Basis, Limitation: fact.Limitation})
+		}
+		group := &record.Parameters[index]
+		group.Values = append(group.Values, parameterValue{
+			Name: fact.Name, Value: fact.Value, Location: fact.Location, Line: fact.Line, Symbol: fact.Symbol,
+		})
+	}
+	for _, name := range evidence.Unresolved {
+		if !declared[name] {
+			record.Unresolved = append(record.Unresolved, name)
+		}
+	}
+	slices.Sort(record.Unresolved)
+	record.Unresolved = slices.Compact(record.Unresolved)
+	slices.SortFunc(record.Parameters, func(a, b parameterGroup) int {
+		return compareText(a.Basis+"\x00"+a.Limitation, b.Basis+"\x00"+b.Limitation)
+	})
+	for i := range record.Parameters {
+		values := record.Parameters[i].Values
+		slices.SortFunc(values, func(a, b parameterValue) int {
+			return compareText(parameterKey(a), parameterKey(b))
+		})
+		record.Parameters[i].Values = slices.Compact(values)
+	}
+	if record.Kind == "" && record.Collector == "" && record.Time == "" && record.Symbol == "" &&
+		len(record.Unresolved) == 0 && len(record.Parameters) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encode provenance: %w", err)
+	}
+	Property(component, "provenance", string(data))
+	return nil
+}
+
+func parameterKey(value parameterValue) string {
+	return value.Name + "\x00" + value.Value + "\x00" + value.Location + "\x00" + decimal(value.Line) + "\x00" + value.Symbol
 }
 
 func occurrenceKey(value cdx.EvidenceOccurrence) string {

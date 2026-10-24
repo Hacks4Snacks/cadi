@@ -43,15 +43,22 @@ func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 		t.Fatalf("expected deduplicated components, got %d", len(*bom.Components))
 	}
 	cryptoCount := 0
-	var encodedEvidence Evidence
+	var encodedEvidence provenance
+	var occurrence cdx.EvidenceOccurrence
 	for _, component := range *bom.Components {
 		if component.Type == cdx.ComponentTypeCryptographicAsset && component.CryptoProperties != nil {
 			cryptoCount++
+			if component.Evidence == nil || component.Evidence.Occurrences == nil || len(*component.Evidence.Occurrences) != 1 {
+				t.Fatal("missing or duplicated native occurrence")
+			}
+			occurrence = (*component.Evidence.Occurrences)[0]
 			for _, property := range *component.Properties {
-				if property.Name == "ciphertrail:evidence" {
+				if property.Name == "ciphertrail:provenance" {
 					if err := json.Unmarshal([]byte(property.Value), &encodedEvidence); err != nil {
 						t.Fatal(err)
 					}
+				} else if property.Name == "ciphertrail:evidence" {
+					t.Fatal("legacy duplicate evidence is still emitted")
 				}
 			}
 		}
@@ -59,11 +66,136 @@ func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 	if cryptoCount != 1 {
 		t.Fatal("serialization changed or dropped a cryptographic-asset component")
 	}
-	if !reflect.DeepEqual(encodedEvidence, evidence) {
+	if encodedEvidence.Occurrence == "" || encodedEvidence.Occurrence != occurrence.BOMRef ||
+		encodedEvidence.Kind != evidence.Kind || encodedEvidence.Collector != evidence.Collector ||
+		occurrence.Location != evidence.Location || occurrence.Line == nil || *occurrence.Line != evidence.Line || occurrence.Symbol != evidence.Symbol ||
+		len(encodedEvidence.Parameters) != 1 || len(encodedEvidence.Parameters[0].Values) != 1 ||
+		encodedEvidence.Parameters[0].Basis != evidence.Parameters[0].Basis ||
+		encodedEvidence.Parameters[0].Limitation != evidence.Parameters[0].Limitation ||
+		encodedEvidence.Parameters[0].Values[0].Location != "factory.go" ||
+		encodedEvidence.Parameters[0].Values[0].Value != "4096" {
 		t.Fatalf("parameter provenance was lost or rewritten: %+v", encodedEvidence)
 	}
 	if bom.SpecVersion != cdx.SpecVersion1_7 || bom.JSONSchema != "http://cyclonedx.org/schema/bom-1.7.schema.json" || !strings.Contains(string(data), "configured") {
 		t.Fatalf("missing format or evidence: %s", data)
+	}
+}
+
+func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testing.T) {
+	component := Algorithm("shared key algorithm", cdx.CryptoPrimitivePKE)
+	component.BOMRef = "shared"
+	Property(&component, "label", "unknown")
+	evidence := Evidence{
+		Kind: "configured", Collector: "go", Location: "main.go", Line: 4, Symbol: "example.Build",
+		Unresolved: []string{"key-size-bits", "iv-size-bits", "iv-size-bits"},
+		Parameters: []ParameterEvidence{
+			{Name: "key-size-bits", Value: "4096", Location: "factory.go", Line: 12, Basis: "field-initializer", Limitation: "other constructions are possible"},
+			{Name: "key-size-bits", Value: "2048", Location: "factory.go", Line: 6, Basis: "field-initializer", Limitation: "other constructions are possible"},
+		},
+	}
+	var result Result
+	result.Add(component, evidence, "")
+	observed := Evidence{Kind: "observed", Collector: "tls", Location: "localhost:443",
+		Time: "2026-10-24T00:00:00Z", Unresolved: []string{"key-size-bits"}}
+	result.Add(component, observed, "")
+	result.Add(component, observed, "")
+	other := Algorithm("another key algorithm", cdx.CryptoPrimitivePKE)
+	other.BOMRef = "other"
+	result.Add(other, evidence, "")
+	result.Add(Algorithm("location-free algorithm", cdx.CryptoPrimitiveHash),
+		Evidence{Kind: "present", Collector: "binary", Symbol: "public-symbol"}, "")
+
+	data, err := Encode([]Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	globalRefs := map[string]bool{}
+	foundConfigured, foundObserved, foundLocationFree, foundLiteral := false, false, false, false
+	for _, component := range *bom.Components {
+		localRefs := map[string]bool{}
+		if component.Evidence != nil && component.Evidence.Occurrences != nil {
+			for _, occurrence := range *component.Evidence.Occurrences {
+				if occurrence.BOMRef == "" || globalRefs[occurrence.BOMRef] {
+					t.Fatalf("missing or nonunique occurrence reference: %+v", occurrence)
+				}
+				globalRefs[occurrence.BOMRef], localRefs[occurrence.BOMRef] = true, true
+			}
+		}
+		provenanceCount := 0
+		for _, property := range *component.Properties {
+			if property.Name == "ciphertrail:evidence" {
+				t.Fatal("duplicate evidence location remains")
+			}
+			if property.Name == "ciphertrail:label" {
+				foundLiteral = true
+				if property.Value != "unknown" {
+					t.Fatal("a known literal equal to unknown was rewritten")
+				}
+			}
+			if property.Name != "ciphertrail:provenance" {
+				continue
+			}
+			provenanceCount++
+			var record provenance
+			if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(property.Value), &object); err != nil {
+				t.Fatal(err)
+			}
+			if object["location"] != nil || object["line"] != nil {
+				t.Fatal("native location duplicated in supplemental provenance")
+			}
+			if record.Occurrence == "" {
+				foundLocationFree = component.Name == "location-free algorithm" && component.Evidence == nil &&
+					record.Kind == "present" && record.Collector == "binary" && record.Symbol == "public-symbol"
+				continue
+			}
+			if !localRefs[record.Occurrence] || object["symbol"] != nil {
+				t.Fatal("provenance has a dangling occurrence reference or duplicate symbol")
+			}
+			switch record.Kind {
+			case "configured":
+				foundConfigured = true
+				if !reflect.DeepEqual(record.Unresolved, []string{"iv-size-bits"}) ||
+					len(record.Parameters) != 1 || len(record.Parameters[0].Values) != 2 ||
+					record.Parameters[0].Values[0].Value != "2048" ||
+					strings.Count(property.Value, "other constructions are possible") != 1 {
+					t.Fatalf("parameter grouping, ordering, or declared-value handling failed: %+v", record)
+				}
+			case "observed":
+				foundObserved = true
+				if record.Time != observed.Time || !reflect.DeepEqual(record.Unresolved, []string{"key-size-bits"}) {
+					t.Fatal("another occurrence's declaration hid an unresolved observation")
+				}
+			}
+		}
+		if component.BOMRef == "shared" && (provenanceCount != 2 || len(localRefs) != 2) {
+			t.Fatal("distinct observations were collapsed or duplicates retained")
+		}
+	}
+	if !foundConfigured || !foundObserved || !foundLocationFree || !foundLiteral {
+		t.Fatal("an evidence category disappeared")
+	}
+	if !reflect.DeepEqual(evidence.Unresolved, []string{"key-size-bits", "iv-size-bits", "iv-size-bits"}) ||
+		evidence.Parameters[0].Value != "4096" {
+		t.Fatal("encoding mutated collector-owned evidence")
+	}
+	repeated, err := Encode([]Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again cdx.BOM
+	if err := json.Unmarshal(repeated, &again); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(bom.Components, again.Components) {
+		t.Fatal("occurrence references or compact provenance are not deterministic")
 	}
 }
 

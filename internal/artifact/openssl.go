@@ -44,17 +44,18 @@ func parseOpenSSL(result *inventory.Result, data []byte, evidence inventory.Evid
 		}
 		value, _, _ = strings.Cut(value, "#")
 		value = strings.TrimSpace(value)
-		if !publicSelector.MatchString(value) {
-			value = "unknown: expression is not resolved"
-		}
 		component := cdx.Component{Type: "cryptographic-asset", Name: "OpenSSL TLS configuration",
 			CryptoProperties: &cdx.CryptoProperties{AssetType: cdx.CryptoAssetTypeProtocol,
 				ProtocolProperties: &cdx.CryptoProtocolProperties{Type: cdx.CryptoProtocolTypeTLS}}}
-		inventory.Property(&component, "openssl."+key, value)
 		inventory.Property(&component, "openssl.section", section)
 		inventory.Property(&component, "scope", "configuration declaration; section activation and selectors are not evaluated")
 		e := evidence
 		e.Kind, e.Line = "configured", line
+		if publicSelector.MatchString(value) {
+			inventory.Property(&component, "openssl."+key, value)
+		} else {
+			e.Unresolved = append([]string{"openssl." + key}, evidence.Unresolved...)
+		}
 		result.Add(component, e, parent)
 		found = true
 	}

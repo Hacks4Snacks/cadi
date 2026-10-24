@@ -34,7 +34,7 @@ type Source struct {
 	Offline            bool
 }
 
-const analysisScope = "source evidence describes configured call sites, not runtime execution; only documented APIs and bounded value flows are modeled"
+const analysisScope = "source evidence describes configured call sites and declarations, not runtime execution; only documented APIs and bounded value flows are modeled; material contents, issuance, operation success, negotiation, subsequent mutations, and implicit defaults are not established"
 
 // Collect accounts for each discovered module and returns partial evidence with any load failure.
 func (s Source) Collect(ctx context.Context) (inventory.Result, error) {
@@ -338,7 +338,7 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 				}
 				evidence := inventory.Evidence{Kind: "configured", Collector: "go",
 					Location: relative(root, position.Filename), Line: position.Line, Symbol: symbol}
-				component, matched := recognize(path, name, call.Common(), values)
+				component, matched := recognize(path, name, call.Common(), values, &evidence)
 				if matched {
 					addConfiguredParameters(&component, &evidence, call.Common(), values)
 					ref := result.Add(component, evidence, parents[function.Pkg.Pkg.Path()])

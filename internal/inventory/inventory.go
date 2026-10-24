@@ -21,6 +21,7 @@ type Evidence struct {
 	Line       int                 `json:"line,omitempty"`
 	Symbol     string              `json:"symbol,omitempty"`
 	Time       string              `json:"time,omitempty"`
+	Unresolved []string            `json:"unresolved,omitempty"`
 	Parameters []ParameterEvidence `json:"parameters,omitempty"`
 }
 

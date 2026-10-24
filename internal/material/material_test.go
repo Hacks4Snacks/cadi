@@ -75,6 +75,14 @@ func TestEncryptedKeysRetainDistinctLocations(t *testing.T) {
 	if result.Entries[0].Component.BOMRef == result.Entries[1].Component.BOMRef {
 		t.Fatal("distinct unknown keys were collapsed")
 	}
+	for _, entry := range result.Entries {
+		if len(entry.Evidence.Unresolved) != 2 {
+			t.Fatal("unavailable encrypted-key parameters lost their unresolved summary")
+		}
+	}
+	if len(result.Diagnostics) != 2 {
+		t.Fatal("no-decryption limitations were dropped")
+	}
 	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || bytes.Contains(data, []byte("PRIVATE_SENTINEL")) {
 		t.Fatalf("invalid or unsafe encrypted-key output: %v", err)

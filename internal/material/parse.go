@@ -142,7 +142,7 @@ func encryptedKey(result *inventory.Result, evidence inventory.Evidence, parent 
 			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypePrivateKey},
 		},
 	}
-	inventory.Property(&component, "parameters", "unknown: encrypted key is not decrypted")
+	evidence.Unresolved = append([]string{"key-algorithm", "key-size-bits"}, evidence.Unresolved...)
 	result.Add(component, evidence, parent)
 	result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: evidence.Location, Message: "encrypted private-key parameters are unavailable; no decryption attempted"})
 }

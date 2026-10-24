@@ -48,7 +48,7 @@ func nonAssetAPI(api apiIdentity) bool {
 	return false
 }
 
-func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Component, bool) {
+func recognize(path, name string, call *ssa.CallCommon, values *values, evidence *inventory.Evidence) (cdx.Component, bool) {
 	api := calledAPI(call)
 	switch api {
 	case apiIdentity{"crypto", "Signer", "Public"},
@@ -70,7 +70,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 	case apiIdentity{"crypto/x509", "CertificateRequest", "CheckSignature"}:
 		c := inventory.Algorithm("CSR signature verification", cdx.CryptoPrimitiveSignature)
 		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionVerify}
-		inventory.Property(&c, "algorithm", "unknown: determined by the CSR at runtime")
+		evidence.Unresolved = append(evidence.Unresolved, "algorithm")
 		inventory.Property(&c, "scope", "PKCS#10 self-signature check; validity, approval, and certificate issuance are not established")
 		return c, true
 	case apiIdentity{"golang.org/x/crypto/ssh", "", "MarshalAuthorizedKey"}:
@@ -81,12 +81,11 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 		apiIdentity{"golang.org/x/crypto/ssh", "Session", "Shell"}:
 		c := protocol("SSH channel/session use", cdx.CryptoProtocolTypeSSH)
 		inventory.Property(&c, "ssh.operation", api.receiver+"."+api.name)
-		inventory.Property(&c, "scope", "source API use; negotiated algorithms and remote execution are not observed")
 		return c, true
 	case apiIdentity{"golang.org/x/crypto/ssh", "", "PublicKeys"}:
 		c := protocol("SSH authentication configuration", cdx.CryptoProtocolTypeSSH)
 		inventory.Property(&c, "ssh.auth-method", "public-key")
-		inventory.Property(&c, "parameters", "unknown: signer algorithms, key sizes, and runtime authentication outcome")
+		evidence.Unresolved = append(evidence.Unresolved, "ssh.signer-algorithm", "key-size-bits")
 		return c, true
 	case apiIdentity{"golang.org/x/crypto/ssh", "", "InsecureIgnoreHostKey"}:
 		c := protocol("SSH host-key configuration", cdx.CryptoProtocolTypeSSH)
@@ -96,7 +95,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 	case apiIdentity{"crypto/tls", "Conn", "Handshake"},
 		apiIdentity{"crypto/tls", "Conn", "HandshakeContext"}:
 		c := protocol("TLS handshake", cdx.CryptoProtocolTypeTLS)
-		inventory.Property(&c, "parameters", "unknown: source call does not establish the negotiated protocol or cipher suite")
+		evidence.Unresolved = append(evidence.Unresolved, "tls.version", "tls.cipher-suite")
 		return c, true
 	}
 	family := path[strings.LastIndex(path, "/")+1:]
@@ -129,7 +128,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 				c.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = fmt.Sprint(value)
 			}
 		} else {
-			inventory.Property(c, label, "unknown")
+			evidence.Unresolved = append(evidence.Unresolved, label)
 		}
 	}
 	if hash := hashNames[family][name]; hash != "" {
@@ -176,7 +175,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 			} else if name == "GenerateMultiPrimeKey" {
 				parameter(&c, "key-size-bits", 2, false)
 			} else {
-				inventory.Property(&c, "key-size-bits", "unknown")
+				evidence.Unresolved = append(evidence.Unresolved, "key-size-bits")
 			}
 			return c, true
 		}
@@ -218,7 +217,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 					}
 				}
 				if c.CryptoProperties.AlgorithmProperties.EllipticCurve == "" {
-					inventory.Property(&c, "curve", "unknown")
+					evidence.Unresolved = append(evidence.Unresolved, "curve")
 				}
 			}
 			return c, true
@@ -233,7 +232,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 				}
 				c.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID(curve)
 			} else {
-				inventory.Property(&c, "curve", "unknown")
+				evidence.Unresolved = append(evidence.Unresolved, "curve")
 			}
 			return c, true
 		}
@@ -343,7 +342,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values) (cdx.Com
 			if mode == cdx.CryptoAlgorithmModeGCM {
 				c.CryptoProperties.AlgorithmProperties.Primitive = cdx.CryptoPrimitiveAE
 			}
-			inventory.Property(&c, "underlying-algorithm", "unknown")
+			evidence.Unresolved = append(evidence.Unresolved, "underlying-algorithm")
 			return c, true
 		}
 	}
@@ -378,9 +377,7 @@ func nameOfCall(call *ssa.CallCommon) string {
 }
 
 func operation(name string, kind cdx.CryptoAssetType) cdx.Component {
-	c := cdx.Component{Type: "cryptographic-asset", Name: name, CryptoProperties: &cdx.CryptoProperties{AssetType: kind}}
-	inventory.Property(&c, "parameters", "unknown: source operation does not establish runtime material")
-	return c
+	return cdx.Component{Type: "cryptographic-asset", Name: name, CryptoProperties: &cdx.CryptoProperties{AssetType: kind}}
 }
 
 func keyOperation(name string) cdx.Component {

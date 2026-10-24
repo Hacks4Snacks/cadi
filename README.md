@@ -171,7 +171,8 @@ do not create fictitious cryptographic assets.
 The static-analysis scope reminder is retained in the CBOM as
 `ciphertrail:analysis-scope` in collection properties and on retained scanned Go
 modules, rather than printed on every successful scan. Unknown parameters remain
-explicit in findings. There is no
+explicit in per-occurrence `unresolved` summaries, not value-shaped placeholders.
+There is no
 blanket suppression for methods named `String`, `Close`, `Public`, or `Verify`.
 
 Parameter resolution includes integer constants, supported arithmetic, fixed
@@ -183,8 +184,8 @@ are recorded as qualified alternatives rather than unconditional key sizes.
 They are matched by field/type identity and retain their source locations.
 For example, a factory assigning 4096 bits adds
 `ciphertrail:key-size-bits:declared = 4096` and a `field-initializer` parameter
-fact, while `ciphertrail:key-size-bits` remains `unknown` on an unconstrained
-method. Zero-value receivers, later mutation, other constructions, and whether
+fact, without setting an unconditional `ciphertrail:key-size-bits` or native
+parameter set on an unconstrained method. Zero-value receivers, later mutation, other constructions, and whether
 the factory is ever called are not proven away.
 Cipher-mode findings do not currently resolve their underlying block cipher.
 TLS struct initializers record explicit minimum/maximum versions, client-auth
@@ -226,8 +227,12 @@ limitations. A private-key use site can link to its typed definition using a
 engine or compliance verdict. Imported variables without selected source
 initializers remain unknown, even if their names resemble constants (such as
 cert-manager's `RotationPolicyAlways`). No cert-manager defaults are assumed.
-Declaration evidence does not
-prove that a certificate was issued, deployed, or used; actual serial numbers,
+Absent initializer fields are omitted. Explicit fields whose values cannot be
+resolved are listed in the occurrence's `unresolved` summary. Resolved declared
+values have no companion `unknown` property. Literal values such as `false`, `0`,
+and the string `"unknown"` remain ordinary known values.
+
+Declaration evidence does not prove that a certificate was issued, deployed, or used; actual serial numbers,
 validity timestamps, and fingerprints require artifact or runtime evidence.
 
 Source exclusions apply to these declarations too. A reusable key configuration
@@ -416,8 +421,8 @@ Supported public metadata sources include:
 - OpenSSH private keys and authorized/public-key entries, where supported by the
   Go SSH library.
 - RSA, ECDSA, Ed25519, and supported ECDH public-key parameters.
-- Encrypted private-key containers, recorded with unknown parameters rather
-  than decrypted.
+- Encrypted private-key containers, recorded with unresolved algorithm/size
+  summaries and an explicit no-decryption diagnostic rather than decrypted.
 - Go executable build/module information. Linker flags and arbitrary build
   settings are excluded to avoid exporting embedded secrets.
 - OpenSSL `.cnf` protocol, cipher-selector, group, and signature declarations.
@@ -445,12 +450,16 @@ random-access build-info reads rather than loading the whole executable.
 
 Every generated report is validated against bundled CycloneDX 1.7 JSON Schemas,
 without network access. Standard `cryptoProperties`, software dependencies, and
-evidence occurrences carry the inventory. Namespaced properties add:
+evidence occurrences carry the inventory. Each native occurrence has a stable,
+BOM-wide unique `bom-ref`; its location, line, and symbol are recorded only there.
+Namespaced properties add:
 
-- `ciphertrail:evidence`: `present`, `configured`, or `observed`, plus collector,
-  location, symbol, and observation time when applicable. Qualified parameter
-  facts include `name`, `value`, `basis`, source `location`/`line`, and an explicit
-  `limitation`; they do not replace unknown native parameters.
+- `ciphertrail:provenance`: an `occurrence` reference, `present` / `configured` /
+  `observed` classification, collector, observation time when applicable, and
+  an optional `unresolved` parameter-name summary. Qualified parameter facts
+  are grouped by shared `basis` and `limitation`; each group's `values` retain
+  their names, values, and definition locations. Definition locations describe
+  parameter origins, not duplicate copies of the asset's use site.
 - `ciphertrail:collection`: requested target, outcome, collector properties
   (including Go build context, analysis scope, and detailed package-load
   problems), errors, and limitations.
@@ -458,7 +467,45 @@ evidence occurrences carry the inventory. Namespaced properties add:
 - `ciphertrail:output-scope`: `crypto-focused` or `full-dependencies`.
 - `ciphertrail:omitted-components`: number of collected components excluded by
   the output scope.
-- Resolved public parameters, or explicit `unknown` values.
+- Resolved public parameters and qualified `:declared` alternatives. Missing
+  parameters are not replaced with invented values or defaults.
+
+Supplemental provenance is associated with its own occurrence, so declarations
+from one location cannot hide unresolved parameters or observations elsewhere.
+Evidence without a location remains component-scoped; no occurrence is invented,
+and a symbol is retained in supplemental provenance if one was supplied.
+Repeated generic source-analysis caveats belong to collection scope metadata.
+
+For example, a decoded `ciphertrail:provenance` property can contain:
+
+```json
+{
+  "occurrence": "urn:ciphertrail:<occurrence-hash>",
+  "kind": "configured",
+  "collector": "go",
+  "unresolved": ["cert-manager.common-name", "cert-manager.secret-name"],
+  "parameters": [
+    {
+      "basis": "declared-policy-initializer",
+      "limitation": "declared configuration only; exported mutable policy may change before use",
+      "values": [
+        {
+          "name": "cert-manager.duration",
+          "value": "720h0m0s",
+          "location": "pkg/certpolicy/client.go",
+          "line": 40
+        }
+      ]
+    }
+  ]
+}
+```
+
+This replaces the former `ciphertrail:evidence` property. Consumers should join
+`provenance.occurrence` to `evidence.occurrences[].bom-ref`, read grouped
+`parameters[].values`, and use `unresolved` rather than testing property values
+for the string `"unknown"`. Existing reports can be replaced by rescanning.
+The output remains CycloneDX 1.7; no compatibility flag is required.
 
 The complete schema bundle, including `cryptography-defs.schema.json`, is pinned
 to the official 1.7 release. Generation and validation target 1.7 only.
