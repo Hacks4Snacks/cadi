@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"testing"
 
+	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
@@ -20,7 +21,7 @@ func TestParseCertificateAndPrivateKeyWithoutSecrets(t *testing.T) {
 	if err != nil || !recognized {
 		t.Fatalf("recognized=%v, err=%v", recognized, err)
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestEncryptedKeysRetainDistinctLocations(t *testing.T) {
 	if len(result.Diagnostics) != 2 {
 		t.Fatal("no-decryption limitations were dropped")
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || bytes.Contains(data, []byte("PRIVATE_SENTINEL")) {
 		t.Fatalf("invalid or unsafe encrypted-key output: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestSSHAuthorizedKeysWithComments(t *testing.T) {
 	if err != nil || !recognized || len(result.Entries) == 0 {
 		t.Fatalf("SSH key was missed after comments: %v", err)
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || bytes.Contains(data, []byte("PRIVATE_SENTINEL")) {
 		t.Fatal("SSH comment leaked")
 	}

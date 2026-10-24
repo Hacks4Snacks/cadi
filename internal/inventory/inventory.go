@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
@@ -21,8 +22,26 @@ type Evidence struct {
 	Line       int                 `json:"line,omitempty"`
 	Symbol     string              `json:"symbol,omitempty"`
 	Time       string              `json:"time,omitempty"`
+	Context    *SourceContext      `json:"context,omitempty"`
 	Unresolved []string            `json:"unresolved,omitempty"`
 	Parameters []ParameterEvidence `json:"parameters,omitempty"`
+}
+
+// ResourceIdentity identifies a configuration resource without assuming a deployment namespace.
+type ResourceIdentity struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Namespace  string `json:"namespace,omitempty"`
+	Name       string `json:"name"`
+}
+
+// SourceContext locates a resource field within a structured input or embedded payload.
+type SourceContext struct {
+	Document     int               `json:"document,omitempty"`
+	Resource     *ResourceIdentity `json:"resource,omitempty"`
+	Field        string            `json:"field,omitempty"`
+	RenderedFrom string            `json:"renderedFrom,omitempty"`
+	ContentLine  int               `json:"contentLine,omitempty"`
 }
 
 // ParameterEvidence records a scoped declaration without asserting a runtime value.
@@ -97,10 +116,29 @@ func (r *Result) Add(component cdx.Component, evidence Evidence, parent string) 
 			r.err = errors.Join(r.err, fmt.Errorf("identify component %q: %w", component.Name, err))
 			return ""
 		}
-		component.BOMRef = Ref(string(identity), parent, evidence.Kind, evidence.Location, evidence.Symbol, decimal(evidence.Line))
+		parts := []string{string(identity), parent, evidence.Kind, evidence.Location, evidence.Symbol, strconv.Itoa(evidence.Line)}
+		if evidence.Context != nil {
+			context, err := json.Marshal(evidence.Context)
+			if err != nil {
+				r.err = errors.Join(r.err, fmt.Errorf("identify structured evidence: %w", err))
+				return ""
+			}
+			parts = append(parts, string(context))
+		}
+		component.BOMRef = Ref(parts...)
 	}
 	r.Entries = append(r.Entries, Entry{Component: component, Evidence: evidence, Parent: parent})
 	return component.BOMRef
+}
+
+// Err returns failures recorded while constructing inventory entries.
+func (r *Result) Err() error {
+	return r.err
+}
+
+// Metadata records collection-level public context or an analysis limitation.
+func (r *Result) Metadata(name, value string) {
+	r.Properties = append(r.Properties, cdx.Property{Name: "ciphertrail:" + name, Value: value})
 }
 
 // DependOn associates a component with a required component without claiming ownership.

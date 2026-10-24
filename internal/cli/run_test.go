@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
@@ -34,7 +35,7 @@ func TestCLIFileOutputAndOperationalFailure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := inventory.Validate(data); err != nil {
+		if err := cyclonedx.Validate(data); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -43,7 +44,7 @@ func TestCLIFileOutputAndOperationalFailure(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout.String(), "incomplete") || stderr.Len() == 0 {
 		t.Fatalf("missing partial/error behavior: exit=%d stderr=%s", code, stderr.String())
 	}
-	if err := inventory.Validate(stdout.Bytes()); err != nil {
+	if err := cyclonedx.Validate(stdout.Bytes()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -132,7 +133,7 @@ func TestGoScanThroughCLI(t *testing.T) {
 	if code != 0 || !strings.Contains(stdout.String(), "SHA-256") {
 		t.Fatalf("exit=%d: %s", code, stderr.String())
 	}
-	if err := inventory.Validate(stdout.Bytes()); err != nil {
+	if err := cyclonedx.Validate(stdout.Bytes()); err != nil {
 		t.Fatal(err)
 	}
 	if stderr.Len() != 0 {

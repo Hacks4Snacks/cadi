@@ -1,4 +1,4 @@
-package inventory
+package cyclonedx
 
 import (
 	"encoding/json"
@@ -7,28 +7,30 @@ import (
 	"strings"
 	"testing"
 
+	"ciphertrail/internal/inventory"
+
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
 
 func TestEncodeStableReferencesAndEvidence(t *testing.T) {
-	evidence := Evidence{
+	evidence := inventory.Evidence{
 		Kind: "configured", Collector: "go", Location: "main.go", Line: 12, Symbol: "crypto/rsa.GenerateKey",
-		Parameters: []ParameterEvidence{{
+		Parameters: []inventory.ParameterEvidence{{
 			Name: "key-size-bits", Value: "4096", Basis: "field-initializer", Location: "factory.go", Line: 8,
 			Symbol: "example.Generator.bits", Limitation: "zero values and other constructions remain possible",
 		}},
 	}
-	var first Result
-	parent := first.Add(cdx.Component{Type: "application", Name: "example"}, Evidence{Kind: "present"}, "")
-	algorithm := Algorithm("RSA", cdx.CryptoPrimitivePKE)
+	var first inventory.Result
+	parent := first.Add(cdx.Component{Type: "application", Name: "example"}, inventory.Evidence{Kind: "present"}, "")
+	algorithm := inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE)
 	ref := first.Add(algorithm, evidence, parent)
 	first.Add(algorithm, evidence, parent)
 
-	var second Result
+	var second inventory.Result
 	if got := second.Add(algorithm, evidence, parent); got != ref {
 		t.Fatalf("unstable references: %s != %s", got, ref)
 	}
-	data, err := Encode([]Collection{{Collector: "go", Target: ".", Result: first}})
+	data, err := Encode([]inventory.Collection{{Collector: "go", Target: ".", Result: first}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,30 +84,31 @@ func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 }
 
 func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testing.T) {
-	component := Algorithm("shared key algorithm", cdx.CryptoPrimitivePKE)
+	component := inventory.Algorithm("shared key algorithm", cdx.CryptoPrimitivePKE)
 	component.BOMRef = "shared"
-	Property(&component, "label", "unknown")
-	evidence := Evidence{
+	inventory.
+		Property(&component, "label", "unknown")
+	evidence := inventory.Evidence{
 		Kind: "configured", Collector: "go", Location: "main.go", Line: 4, Symbol: "example.Build",
 		Unresolved: []string{"key-size-bits", "iv-size-bits", "iv-size-bits"},
-		Parameters: []ParameterEvidence{
+		Parameters: []inventory.ParameterEvidence{
 			{Name: "key-size-bits", Value: "4096", Location: "factory.go", Line: 12, Basis: "field-initializer", Limitation: "other constructions are possible"},
 			{Name: "key-size-bits", Value: "2048", Location: "factory.go", Line: 6, Basis: "field-initializer", Limitation: "other constructions are possible"},
 		},
 	}
-	var result Result
+	var result inventory.Result
 	result.Add(component, evidence, "")
-	observed := Evidence{Kind: "observed", Collector: "tls", Location: "localhost:443",
+	observed := inventory.Evidence{Kind: "observed", Collector: "tls", Location: "localhost:443",
 		Time: "2026-10-24T00:00:00Z", Unresolved: []string{"key-size-bits"}}
 	result.Add(component, observed, "")
 	result.Add(component, observed, "")
-	other := Algorithm("another key algorithm", cdx.CryptoPrimitivePKE)
+	other := inventory.Algorithm("another key algorithm", cdx.CryptoPrimitivePKE)
 	other.BOMRef = "other"
 	result.Add(other, evidence, "")
-	result.Add(Algorithm("location-free algorithm", cdx.CryptoPrimitiveHash),
+	result.Add(inventory.Algorithm("location-free algorithm", cdx.CryptoPrimitiveHash), inventory.
 		Evidence{Kind: "present", Collector: "binary", Symbol: "public-symbol"}, "")
 
-	data, err := Encode([]Collection{{Result: result}})
+	data, err := Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +189,7 @@ func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testin
 		evidence.Parameters[0].Value != "4096" {
 		t.Fatal("encoding mutated collector-owned evidence")
 	}
-	repeated, err := Encode([]Collection{{Result: result}})
+	repeated, err := Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +203,7 @@ func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testin
 }
 
 func TestFailureBeforeAnyFindingsStillProducesValidPartialBOM(t *testing.T) {
-	data, err := Encode([]Collection{{Collector: "tls", Target: "localhost:443", Err: errors.New("connection failed")}})
+	data, err := Encode([]inventory.Collection{{Collector: "tls", Target: "localhost:443", Err: errors.New("connection failed")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +223,47 @@ func TestFailureBeforeAnyFindingsStillProducesValidPartialBOM(t *testing.T) {
 	}
 	if !incomplete {
 		t.Fatal("missing incomplete collection status")
+	}
+}
+
+func TestStructuredFieldsKeepDistinctOccurrencesAtTheSameSourceLine(t *testing.T) {
+	var result inventory.Result
+	component := inventory.Algorithm("shared", cdx.CryptoPrimitiveOther)
+	component.BOMRef = "shared"
+	for _, field := range []string{"/data/tls.crt", "/stringData/tls.key"} {
+		evidence := inventory.Evidence{Kind: "present", Collector: "kubernetes", Location: "secret.json", Line: 1,
+			Context: &inventory.SourceContext{Document: 1, Field: field, ContentLine: 1,
+				Resource: &inventory.ResourceIdentity{APIVersion: "v1", Kind: "Secret", Namespace: "workload", Name: "shared"}}}
+		result.Add(component, evidence, "")
+	}
+	bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+	got := (*bom.Components)[0]
+	if got.Evidence == nil || len(*got.Evidence.Occurrences) != 2 {
+		t.Fatal("same-line resource fields collapsed into one occurrence")
+	}
+	refs := map[string]bool{}
+	for _, occurrence := range *got.Evidence.Occurrences {
+		refs[occurrence.BOMRef] = true
+	}
+	if len(refs) != 2 {
+		t.Fatal("structured occurrence references are not unique")
+	}
+	fields := map[string]bool{}
+	for _, property := range *got.Properties {
+		if property.Name != "ciphertrail:provenance" {
+			continue
+		}
+		var record provenance
+		if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+			t.Fatal(err)
+		}
+		if !refs[record.Occurrence] || record.Context == nil || record.Context.Resource.Name != "shared" {
+			t.Fatal("structured context lost its occurrence association")
+		}
+		fields[record.Context.Field] = true
+	}
+	if len(fields) != 2 {
+		t.Fatal("resource field provenance disappeared")
 	}
 }
 
@@ -250,9 +294,9 @@ func TestNativeRelatedCryptoReferencesAreValidated(t *testing.T) {
 		{AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial, RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{RelatedCryptographicAssets: &[]cdx.RelatedCryptographicAsset{{Type: "algorithm", Ref: "missing"}}}},
 		{AssetType: cdx.CryptoAssetTypeProtocol, ProtocolProperties: &cdx.CryptoProtocolProperties{RelatedCryptographicAssets: &[]cdx.RelatedCryptographicAsset{{Type: "certificate", Ref: "missing"}}}},
 	} {
-		var result Result
-		result.Add(cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: "asset", CryptoProperties: properties}, Evidence{}, "")
-		if _, err := Encode([]Collection{{Result: result}}); err == nil {
+		var result inventory.Result
+		result.Add(cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: "asset", CryptoProperties: properties}, inventory.Evidence{}, "")
+		if _, err := Encode([]inventory.Collection{{Result: result}}); err == nil {
 			t.Errorf("dangling native 1.7 relationship accepted for %s", properties.AssetType)
 		}
 	}
@@ -263,24 +307,24 @@ func TestGoCurveIdentifiers(t *testing.T) {
 		"P-224": "nist/P-224", "P-256": "nist/P-256", "P-384": "nist/P-384", "P-521": "nist/P-521",
 		"Ed25519": "other/Ed25519", "X25519": "other/Curve25519", "": "", "unsupported": "unsupported",
 	} {
-		if got := CurveID(name); got != want {
+		if got := inventory.CurveID(name); got != want {
 			t.Errorf("%s: got %s, want %s", name, got, want)
 		}
 	}
 }
 
 func TestEncodeRejectsDanglingReferences(t *testing.T) {
-	var result Result
-	result.Add(Algorithm("SHA-256", cdx.CryptoPrimitiveHash), Evidence{}, "missing")
-	if _, err := Encode([]Collection{{Result: result}}); err == nil {
+	var result inventory.Result
+	result.Add(inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash), inventory.Evidence{}, "missing")
+	if _, err := Encode([]inventory.Collection{{Result: result}}); err == nil {
 		t.Fatal("dangling dependency accepted")
 	}
 
 }
 
 func TestFocusedExportKeepsCryptoContextWithoutImportingUnrelatedLibraries(t *testing.T) {
-	var result Result
-	present := Evidence{Kind: "present", Collector: "go", Location: "go.mod"}
+	var result inventory.Result
+	present := inventory.Evidence{Kind: "present", Collector: "go", Location: "go.mod"}
 	image := result.Add(cdx.Component{Type: "container", Name: "image"}, present, "")
 	owner := result.Add(cdx.Component{Type: "application", Name: "owner"}, present, image)
 	provider := result.Add(cdx.Component{Type: "library", Name: "crypto-provider"}, present, "")
@@ -291,11 +335,11 @@ func TestFocusedExportKeepsCryptoContextWithoutImportingUnrelatedLibraries(t *te
 	result.DependOn(xml, format)
 	result.DependOn(format, xml)
 	result.DependOn(format, provider)
-	hash := result.Add(Algorithm("SHA-256", cdx.CryptoPrimitiveHash), Evidence{Kind: "configured", Location: "main.go"}, owner)
+	hash := result.Add(inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash), inventory.Evidence{Kind: "configured", Location: "main.go"}, owner)
 	result.DependOn(hash, provider)
 
-	full := encodeForTest(t, []Collection{{Result: result}}, EncodeOptions{IncludeDependencies: true})
-	focused := encodeForTest(t, []Collection{{Result: result}}, EncodeOptions{})
+	full := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{IncludeDependencies: true})
+	focused := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
 	want := map[string]bool{image: true, owner: true, provider: true, hash: true}
 	if len(*full.Components) != 6 || len(*focused.Components) != len(want) {
 		t.Fatalf("wrong component counts: full=%d focused=%d", len(*full.Components), len(*focused.Components))
@@ -326,7 +370,7 @@ func TestFocusedExportKeepsCryptoContextWithoutImportingUnrelatedLibraries(t *te
 			t.Fatal("dangling unrelated dependency retained")
 		}
 	}
-	data, err := Encode([]Collection{{Result: result}})
+	data, err := Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,11 +380,11 @@ func TestFocusedExportKeepsCryptoContextWithoutImportingUnrelatedLibraries(t *te
 }
 
 func TestFocusedExportPreservesCryptoReferencesAndSharedOwnership(t *testing.T) {
-	var result Result
-	evidence := Evidence{Kind: "observed", Collector: "tls"}
+	var result inventory.Result
+	evidence := inventory.Evidence{Kind: "observed", Collector: "tls"}
 	a := result.Add(cdx.Component{Type: "application", Name: "a"}, evidence, "")
 	b := result.Add(cdx.Component{Type: "application", Name: "b"}, evidence, "")
-	algorithm := Algorithm("RSA", cdx.CryptoPrimitiveSignature)
+	algorithm := inventory.Algorithm("RSA", cdx.CryptoPrimitiveSignature)
 	algorithmRef := result.Add(algorithm, evidence, a)
 	algorithm.BOMRef = algorithmRef
 	result.Add(algorithm, evidence, b)
@@ -371,7 +415,7 @@ func TestFocusedExportPreservesCryptoReferencesAndSharedOwnership(t *testing.T) 
 	}}
 	result.Add(protocol, evidence, a)
 	result.Add(cdx.Component{Type: "library", Name: "unrelated"}, evidence, "")
-	bom := encodeForTest(t, []Collection{{Result: result}}, EncodeOptions{})
+	bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
 	if len(*bom.Components) != 6 {
 		t.Fatalf("lost shared ownership or crypto context: %d components", len(*bom.Components))
 	}
@@ -379,11 +423,11 @@ func TestFocusedExportPreservesCryptoReferencesAndSharedOwnership(t *testing.T) 
 }
 
 func TestFocusedEmptyReportPreservesScopeAndErrors(t *testing.T) {
-	var result Result
-	result.Add(cdx.Component{Type: "library", Name: "unrelated"}, Evidence{Kind: "present"}, "")
+	var result inventory.Result
+	result.Add(cdx.Component{Type: "library", Name: "unrelated"}, inventory.Evidence{Kind: "present"}, "")
 	result.Properties = []cdx.Property{{Name: "ciphertrail:analysis-scope", Value: "configured, not executed"}}
-	result.Diagnostics = []Diagnostic{{Message: "unmodeled API", Location: "main.go", Line: 3}}
-	collections := []Collection{{Collector: "go", Target: ".", Result: result, Err: errors.New("load failed")}}
+	result.Diagnostics = []inventory.Diagnostic{{Message: "unmodeled API", Location: "main.go", Line: 3}}
+	collections := []inventory.Collection{{Collector: "go", Target: ".", Result: result, Err: errors.New("load failed")}}
 	bom := encodeForTest(t, collections, EncodeOptions{})
 	if len(*bom.Components) != 0 || len(*bom.Dependencies) != 0 {
 		t.Fatal("crypto-free input was not pruned")
@@ -405,23 +449,23 @@ func TestFocusedEmptyReportPreservesScopeAndErrors(t *testing.T) {
 
 func TestPruningDoesNotHideInvalidDependencies(t *testing.T) {
 	for _, include := range []bool{false, true} {
-		var result Result
-		ref := result.Add(cdx.Component{Type: "library", Name: "unrelated"}, Evidence{}, "")
+		var result inventory.Result
+		ref := result.Add(cdx.Component{Type: "library", Name: "unrelated"}, inventory.Evidence{}, "")
 		result.DependOn(ref, "missing")
-		if _, err := EncodeWithOptions([]Collection{{Result: result}}, EncodeOptions{IncludeDependencies: include}); err == nil {
+		if _, err := EncodeWithOptions([]inventory.Collection{{Result: result}}, EncodeOptions{IncludeDependencies: include}); err == nil {
 			t.Fatal("invalid graph was hidden by pruning")
 		}
 	}
 }
 
 func TestFocusedExportHandlesOwnershipCycles(t *testing.T) {
-	var result Result
-	a, b := Ref("owner-a"), Ref("owner-b")
-	result.Add(cdx.Component{BOMRef: a, Type: "application", Name: "a"}, Evidence{}, b)
-	result.Add(cdx.Component{BOMRef: b, Type: "application", Name: "b"}, Evidence{}, a)
-	result.Add(Algorithm("SHA-256", cdx.CryptoPrimitiveHash), Evidence{}, a)
-	result.Add(cdx.Component{Type: "library", Name: "unrelated"}, Evidence{}, "")
-	bom := encodeForTest(t, []Collection{{Result: result}}, EncodeOptions{})
+	var result inventory.Result
+	a, b := inventory.Ref("owner-a"), inventory.Ref("owner-b")
+	result.Add(cdx.Component{BOMRef: a, Type: "application", Name: "a"}, inventory.Evidence{}, b)
+	result.Add(cdx.Component{BOMRef: b, Type: "application", Name: "b"}, inventory.Evidence{}, a)
+	result.Add(inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash), inventory.Evidence{}, a)
+	result.Add(cdx.Component{Type: "library", Name: "unrelated"}, inventory.Evidence{}, "")
+	bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
 	if len(*bom.Components) != 3 {
 		t.Fatal("ownership cycle lost context or retained unrelated components")
 	}
@@ -429,7 +473,7 @@ func TestFocusedExportHandlesOwnershipCycles(t *testing.T) {
 }
 
 func TestSecuredByReferencesAreValidatedBeforePruning(t *testing.T) {
-	var result Result
+	var result inventory.Result
 	component := cdx.Component{Type: "cryptographic-asset", Name: "encrypted key", CryptoProperties: &cdx.CryptoProperties{
 		AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
 		RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{
@@ -437,13 +481,13 @@ func TestSecuredByReferencesAreValidatedBeforePruning(t *testing.T) {
 			SecuredBy: &cdx.SecuredBy{AlgorithmRef: cdx.BOMReference("missing")},
 		},
 	}}
-	result.Add(component, Evidence{}, "")
-	if _, err := Encode([]Collection{{Result: result}}); err == nil {
+	result.Add(component, inventory.Evidence{}, "")
+	if _, err := Encode([]inventory.Collection{{Result: result}}); err == nil {
 		t.Fatal("dangling key-protection reference accepted")
 	}
 }
 
-func encodeForTest(t *testing.T, collections []Collection, options EncodeOptions) cdx.BOM {
+func encodeForTest(t *testing.T, collections []inventory.Collection, options EncodeOptions) cdx.BOM {
 	t.Helper()
 	data, err := EncodeWithOptions(collections, options)
 	if err != nil {
@@ -485,14 +529,15 @@ func assertClosedGraph(t *testing.T, bom cdx.BOM) {
 }
 
 func TestEncodePreservesCrossCollectorEnrichment(t *testing.T) {
-	var result Result
-	first := Algorithm("RSA", cdx.CryptoPrimitivePKE)
-	first.BOMRef = Ref("same-key")
-	result.Add(first, Evidence{Kind: "present", Collector: "file"}, "")
+	var result inventory.Result
+	first := inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE)
+	first.BOMRef = inventory.Ref("same-key")
+	result.Add(first, inventory.Evidence{Kind: "present", Collector: "file"}, "")
 	second := first
-	Property(&second, "ssh-key-format", "ssh-rsa")
-	result.Add(second, Evidence{Kind: "observed", Collector: "ssh"}, "")
-	data, err := Encode([]Collection{{Result: result}})
+	inventory.
+		Property(&second, "ssh-key-format", "ssh-rsa")
+	result.Add(second, inventory.Evidence{Kind: "observed", Collector: "ssh"}, "")
+	data, err := Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}

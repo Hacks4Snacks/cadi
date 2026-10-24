@@ -31,7 +31,14 @@ func Parse(data []byte, evidence inventory.Evidence, parent string) (inventory.R
 				return result, true, fmt.Errorf("malformed PEM prefix in %s", evidence.Location)
 			}
 			blockEvidence := evidence
-			blockEvidence.Line = bytes.Count(data[:len(data)-len(rest)+start], []byte{'\n'}) + 1
+			line := bytes.Count(data[:len(data)-len(rest)+start], []byte{'\n'}) + 1
+			if evidence.Context == nil {
+				blockEvidence.Line = line
+			} else {
+				context := *evidence.Context
+				context.ContentLine = line
+				blockEvidence.Context = &context
+			}
 			rest = remaining
 			if err := parseBlock(&result, block, blockEvidence, parent); err != nil {
 				return result, true, fmt.Errorf("%s: %w", evidence.Location, err)

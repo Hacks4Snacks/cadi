@@ -5,7 +5,6 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/types"
-	"strconv"
 	"strings"
 	"time"
 
@@ -249,23 +248,7 @@ func certificateKeyConfiguration(result *inventory.Result, expression ast.Expr, 
 			properties.Size = &size
 		}
 	}
-	var algorithm cdx.Component
-	switch algorithmName {
-	case "RSA":
-		algorithm = inventory.Algorithm(algorithmName, cdx.CryptoPrimitivePKE)
-	case "ECDSA":
-		algorithm = inventory.Algorithm(algorithmName, cdx.CryptoPrimitiveSignature)
-		if size == 256 || size == 384 || size == 521 {
-			algorithm.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID("P-" + strconv.Itoa(size))
-		}
-	case "Ed25519":
-		algorithm = inventory.Algorithm(algorithmName, cdx.CryptoPrimitiveSignature)
-		algorithm.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID("Ed25519")
-	}
-	if algorithm.CryptoProperties != nil {
-		if size > 0 {
-			algorithm.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = strconv.Itoa(size)
-		}
+	if algorithm, known := inventory.ConfiguredKeyAlgorithm(algorithmName, size); known {
 		algorithmRef := result.Add(algorithm, evidence, parent)
 		result.DependOn(algorithmRef, provider)
 		properties.RelatedCryptographicAssets = &[]cdx.RelatedCryptographicAsset{{Type: "algorithm", Ref: algorithmRef}}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
@@ -116,7 +117,7 @@ func Run(dynamic int) {
 			t.Errorf("missing %s implementation context for %s", wantProvider, entry.Evidence.Symbol)
 		}
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestInvalidSourceAndCancellationAreReported(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid source accepted")
 	}
-	if _, encodeErr := inventory.Encode([]inventory.Collection{{Result: result, Err: err}}); encodeErr != nil {
+	if _, encodeErr := cyclonedx.Encode([]inventory.Collection{{Result: result, Err: err}}); encodeErr != nil {
 		t.Fatal(encodeErr)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -342,8 +343,8 @@ func Run(signer crypto.Signer, private *ecdh.PrivateKey, public *ecdh.PublicKey,
 	if !scope {
 		t.Fatal("static analysis scope was discarded rather than retained as metadata")
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Collector: "go", Result: result}})
-	if err != nil || inventory.Validate(data) != nil {
+	data, err := cyclonedx.Encode([]inventory.Collection{{Collector: "go", Result: result}})
+	if err != nil || cyclonedx.Validate(data) != nil {
 		t.Fatalf("invalid CBOM: %v", err)
 	}
 }
@@ -453,7 +454,7 @@ func Build(issuer, secret string) cm.Certificate {
 	if !found {
 		t.Fatal("declarative certificate configuration was missed")
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -556,7 +557,7 @@ func Fixture() cm.CertificateSpec { return cm.CertificateSpec{SecretName:"EXCLUD
 	if count != 1 {
 		t.Fatalf("alias or lookalike classification failed: %d declarations", count)
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") || strings.Contains(string(data), "EXCLUDED_SENTINEL") {
 		t.Fatalf("unrelated or excluded data leaked: %v", err)
 	}
@@ -597,7 +598,7 @@ var D = cm.CertificatePrivateKey{}
 	if !ecdsa || !ed25519 || !rsa || !unknown {
 		t.Fatalf("incorrect defaults or ignored key size: ecdsa=%v ed25519=%v rsa=%v unknown=%v", ecdsa, ed25519, rsa, unknown)
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -672,7 +673,7 @@ func TLS(version uint16) *tls.Config { return &tls.Config{MinVersion:version,Ins
 	if !configured || !empty || !key || !tlsConfig {
 		t.Fatal("compact output dropped a declaration")
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +815,7 @@ func CopyDuration() cm.Duration { return *Duration }
 	if !keyFound || !durationFound || !rotationFound {
 		t.Fatalf("unresolved declared settings: key=%v duration=%v rotation=%v", keyFound, durationFound, rotationFound)
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -994,7 +995,7 @@ func Build() cm.CertificateSpec { key := `+caller+`; return cm.CertificateSpec{P
 				t.Fatal("unknown certificate configuration was lost")
 			}
 			if strings.HasSuffix(test.name, "initializer") {
-				data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+				data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 				if err != nil || strings.Contains(string(data), "EXCLUDED_ORIGIN_SENTINEL") {
 					t.Fatalf("excluded initializer leaked into report: %v", err)
 				}
@@ -1048,7 +1049,7 @@ func Run(client *ssh.Client, session *ssh.Session, channel ssh.Channel, key *rsa
 	if count != 6 || !auth || !hostKeys {
 		t.Fatalf("incorrect SSH configuration inventory: count=%d auth=%v hostKeys=%v", count, auth, hostKeys)
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1120,7 +1121,7 @@ func Run() { _ = sha256.Sum256(nil) }
 	if !names["SHA-256"] || !names["SHA-512"] || !names["SHA-1"] || len(names) != 3 {
 		t.Fatalf("production evidence lost or fixture retained: %v", names)
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || !strings.Contains(string(data), "ciphertrail:source-exclusion-paths") {
 		t.Fatalf("missing exclusion provenance: %v", err)
 	}
@@ -1208,7 +1209,7 @@ func Run(private *rsa.PrivateKey, public ssh.PublicKey, a,b *x509.Certificate) {
 		nonAssetAPI(apiIdentity{"crypto/x509", "Certificate", "Verify"}) {
 		t.Fatal("validation or signature verification was suppressed as metadata")
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -1,4 +1,4 @@
-package inventory
+package cyclonedx
 
 import (
 	"bytes"
@@ -8,19 +8,22 @@ import (
 	"strconv"
 	"time"
 
+	"ciphertrail/internal/inventory"
+
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
 
 func decimal(value int) string { return strconv.Itoa(value) }
 
 type provenance struct {
-	Occurrence string           `json:"occurrence,omitempty"`
-	Kind       string           `json:"kind,omitempty"`
-	Collector  string           `json:"collector,omitempty"`
-	Time       string           `json:"time,omitempty"`
-	Symbol     string           `json:"symbol,omitempty"`
-	Unresolved []string         `json:"unresolved,omitempty"`
-	Parameters []parameterGroup `json:"parameters,omitempty"`
+	Occurrence string                   `json:"occurrence,omitempty"`
+	Kind       string                   `json:"kind,omitempty"`
+	Collector  string                   `json:"collector,omitempty"`
+	Time       string                   `json:"time,omitempty"`
+	Symbol     string                   `json:"symbol,omitempty"`
+	Context    *inventory.SourceContext `json:"context,omitempty"`
+	Unresolved []string                 `json:"unresolved,omitempty"`
+	Parameters []parameterGroup         `json:"parameters,omitempty"`
 }
 
 type parameterGroup struct {
@@ -43,20 +46,20 @@ type EncodeOptions struct {
 }
 
 // Encode constructs a validated, crypto-focused CycloneDX 1.7 document.
-func Encode(collections []Collection) ([]byte, error) {
+func Encode(collections []inventory.Collection) ([]byte, error) {
 	return EncodeWithOptions(collections, EncodeOptions{})
 }
 
 // EncodeWithOptions optionally includes the complete collected dependency inventory.
-func EncodeWithOptions(collections []Collection, options EncodeOptions) ([]byte, error) {
+func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions) ([]byte, error) {
 	components := make(map[string]*cdx.Component)
 	edges := make(map[string]map[string]bool)
 	owners := make(map[string]map[string]bool)
 	var metadata []cdx.Property
 	incomplete := false
 	for _, collection := range collections {
-		if collection.Result.err != nil {
-			return nil, collection.Result.err
+		if err := collection.Result.Err(); err != nil {
+			return nil, err
 		}
 		status := "succeeded"
 		if collection.Err != nil {
@@ -64,12 +67,12 @@ func EncodeWithOptions(collections []Collection, options EncodeOptions) ([]byte,
 			status = "incomplete"
 		}
 		outcome := struct {
-			Collector   string         `json:"collector"`
-			Target      string         `json:"target"`
-			Status      string         `json:"status"`
-			Error       string         `json:"error,omitempty"`
-			Properties  []cdx.Property `json:"properties,omitempty"`
-			Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+			Collector   string                 `json:"collector"`
+			Target      string                 `json:"target"`
+			Status      string                 `json:"status"`
+			Error       string                 `json:"error,omitempty"`
+			Properties  []cdx.Property         `json:"properties,omitempty"`
+			Diagnostics []inventory.Diagnostic `json:"diagnostics,omitempty"`
 		}{Collector: collection.Collector, Target: collection.Target, Status: status,
 			Properties: slices.Clone(collection.Result.Properties), Diagnostics: collection.Result.Diagnostics}
 		slices.SortFunc(outcome.Properties, compareProperty)
@@ -128,10 +131,10 @@ func EncodeWithOptions(collections []Collection, options EncodeOptions) ([]byte,
 		}
 		occurrences := *component.Evidence.Occurrences
 		slices.SortFunc(occurrences, func(a, b cdx.EvidenceOccurrence) int {
-			return compareText(occurrenceKey(a), occurrenceKey(b))
+			return compareText(occurrenceKey(a)+"\x00"+a.BOMRef, occurrenceKey(b)+"\x00"+b.BOMRef)
 		})
 		occurrences = slices.CompactFunc(occurrences, func(a, b cdx.EvidenceOccurrence) bool {
-			return occurrenceKey(a) == occurrenceKey(b)
+			return a.BOMRef == b.BOMRef
 		})
 		if len(occurrences) == 0 {
 			component.Evidence = nil
@@ -308,15 +311,23 @@ func cryptoReferences(component *cdx.Component) []string {
 	return refs
 }
 
-func appendProvenance(component *cdx.Component, evidence Evidence) error {
-	record := provenance{Kind: evidence.Kind, Collector: evidence.Collector, Time: evidence.Time}
+func appendProvenance(component *cdx.Component, evidence inventory.Evidence) error {
+	record := provenance{Kind: evidence.Kind, Collector: evidence.Collector, Time: evidence.Time, Context: evidence.Context}
 	if evidence.Location != "" {
 		occurrence := cdx.EvidenceOccurrence{Location: evidence.Location, Symbol: evidence.Symbol}
 		if evidence.Line > 0 {
 			line := evidence.Line
 			occurrence.Line = &line
 		}
-		occurrence.BOMRef = Ref("occurrence", component.BOMRef, occurrenceKey(occurrence))
+		parts := []string{"occurrence", component.BOMRef, occurrenceKey(occurrence)}
+		if evidence.Context != nil {
+			context, err := json.Marshal(evidence.Context)
+			if err != nil {
+				return fmt.Errorf("encode occurrence context: %w", err)
+			}
+			parts = append(parts, string(context))
+		}
+		occurrence.BOMRef = inventory.Ref(parts...)
 		record.Occurrence = occurrence.BOMRef
 		*component.Evidence.Occurrences = append(*component.Evidence.Occurrences, occurrence)
 	} else {
@@ -354,7 +365,7 @@ func appendProvenance(component *cdx.Component, evidence Evidence) error {
 		})
 		record.Parameters[i].Values = slices.Compact(values)
 	}
-	if record.Kind == "" && record.Collector == "" && record.Time == "" && record.Symbol == "" &&
+	if record.Kind == "" && record.Collector == "" && record.Time == "" && record.Symbol == "" && record.Context == nil &&
 		len(record.Unresolved) == 0 && len(record.Parameters) == 0 {
 		return nil
 	}
@@ -362,7 +373,7 @@ func appendProvenance(component *cdx.Component, evidence Evidence) error {
 	if err != nil {
 		return fmt.Errorf("encode provenance: %w", err)
 	}
-	Property(component, "provenance", string(data))
+	inventory.Property(component, "provenance", string(data))
 	return nil
 }
 

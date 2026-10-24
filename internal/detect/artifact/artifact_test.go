@@ -1,7 +1,6 @@
 package artifact
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"os"
@@ -9,11 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"ciphertrail/internal/detect"
+	"ciphertrail/internal/export/cyclonedx"
+	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
 	"github.com/google/go-containerregistry/pkg/name"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -35,11 +36,11 @@ func TestFileInventoryAndSymlinkBoundary(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "external.pem"), filepath.Join(directory, "external.pem")); err != nil {
 		t.Fatal(err)
 	}
-	result, err := (Files{Path: directory}).Collect(context.Background())
+	result, err := (detect.Collector{Source: input.Local{Path: directory}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestMalformedAndUnsupportedExplicitFilesFail(t *testing.T) {
 		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := (Files{Path: path}).Collect(context.Background()); err == nil {
+		if _, err := (detect.Collector{Source: input.Local{Path: path}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background()); err == nil {
 			t.Fatal("invalid explicit asset accepted")
 		}
 	}
@@ -73,7 +74,7 @@ func TestGoBinaryMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := (Files{Path: path}).Collect(context.Background())
+	result, err := (detect.Collector{Source: input.Local{Path: path}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,38 +85,27 @@ func TestGoBinaryMetadata(t *testing.T) {
 	if !found {
 		t.Fatal("Go build metadata absent")
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func layer(t *testing.T, files map[string][]byte) v1.Layer {
-	t.Helper()
-	var buffer bytes.Buffer
-	writer := tar.NewWriter(&buffer)
-	for path, contents := range files {
-		if err := writer.WriteHeader(&tar.Header{Name: path, Mode: 0600, Size: int64(len(contents))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := writer.Write(contents); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	result, err := tarball.LayerFromReader(bytes.NewReader(buffer.Bytes()))
+	reader, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return result
+	defer reader.Close()
+	file := input.NewFile("large-binary", input.MaxAssetBytes+1, reader)
+	file.RandomAccess, file.Explicit = reader, true
+	file.Evidence = inventory.Evidence{Kind: "present", Collector: "file", Location: "large-binary"}
+	if _, found, err := (Detector{}).Detect(context.Background(), file); err != nil || !found {
+		t.Fatalf("local binary metadata was forced through whole-file buffering: %v", err)
+	}
 }
 
 func TestImageWhiteoutsAndOCILayout(t *testing.T) {
 	_, _, certificate, _ := testutil.Identity(t)
 	image, err := mutate.AppendLayers(empty.Image,
-		layer(t, map[string][]byte{"old.crt": certificate, "dir/old.crt": certificate}),
-		layer(t, map[string][]byte{".wh.old.crt": {}, "dir/.wh..wh..opq": {}, "dir/new.crt": certificate}))
+		testutil.Layer(t, map[string][]byte{"old.crt": certificate, "dir/old.crt": certificate}),
+		testutil.Layer(t, map[string][]byte{".wh.old.crt": {}, "dir/.wh..wh..opq": {}, "dir/new.crt": certificate}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +122,7 @@ func TestImageWhiteoutsAndOCILayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{archive, ociPath} {
-		result, err := (Image{Path: path}).Collect(context.Background())
+		result, err := (detect.Collector{Source: input.Image{Path: path}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,7 +136,7 @@ func TestImageWhiteoutsAndOCILayout(t *testing.T) {
 		if !found {
 			t.Fatal("effective image asset missing")
 		}
-		if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+		if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -154,7 +144,7 @@ func TestImageWhiteoutsAndOCILayout(t *testing.T) {
 
 func TestImageRejectsTraversal(t *testing.T) {
 	_, _, certificate, _ := testutil.Identity(t)
-	image, err := mutate.AppendLayers(empty.Image, layer(t, map[string][]byte{"../../outside.pem": certificate}))
+	image, err := mutate.AppendLayers(empty.Image, testutil.Layer(t, map[string][]byte{"../../outside.pem": certificate}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +152,7 @@ func TestImageRejectsTraversal(t *testing.T) {
 	if err := tarball.WriteToFile(archive, name.MustParseReference("example.test/fixture:latest"), image); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (Image{Path: archive}).Collect(context.Background()); err == nil {
+	if _, err := (detect.Collector{Source: input.Image{Path: archive}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background()); err == nil {
 		t.Fatal("unsafe image path accepted")
 	}
 }

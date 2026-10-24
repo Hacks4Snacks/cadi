@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"ciphertrail/internal/detect"
+	"ciphertrail/internal/export/cyclonedx"
+	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
 )
 
@@ -20,14 +23,14 @@ func TestBuildSettingsDoNotExportLinkerSecrets(t *testing.T) {
 			{Key: "GOOS", Value: "linux"},
 		},
 	}, inventory.Evidence{Kind: "present", Location: "tool"}, "")
-	data, err := inventory.EncodeWithOptions([]inventory.Collection{{Result: result}}, inventory.EncodeOptions{IncludeDependencies: true})
+	data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "PRIVATE_SENTINEL") || !strings.Contains(string(data), "linux") {
 		t.Fatal("incorrect build metadata filtering")
 	}
-	focused, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	focused, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +45,7 @@ func TestOpenSSLConfigurationIsNotClaimedAsNegotiated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := (Files{Path: path}).Collect(context.Background())
+	result, err := (detect.Collector{Source: input.Local{Path: path}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +57,7 @@ func TestOpenSSLConfigurationIsNotClaimedAsNegotiated(t *testing.T) {
 			t.Fatal("configuration was misrepresented as negotiation")
 		}
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +78,7 @@ func TestOpenSSLUnresolvedExpressionsHaveNoValuePlaceholder(t *testing.T) {
 		len(result.Entries[1].Evidence.Unresolved) != 0 {
 		t.Fatal("unresolved expression was lost or leaked into another declaration")
 	}
-	data, err := inventory.Encode([]inventory.Collection{{Result: result}})
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") ||
 		strings.Contains(string(data), "unknown: expression") {
 		t.Fatalf("unresolved source or value placeholder leaked: %v", err)

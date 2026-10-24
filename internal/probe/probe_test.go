@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
@@ -60,7 +61,7 @@ func TestTLSAndMTLS(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
-			if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+			if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 				t.Fatal(err)
 			}
 			found := false
@@ -144,7 +145,7 @@ func TestSSHStopsBeforeAuthentication(t *testing.T) {
 	if authentications.Load() != 0 {
 		t.Fatal("SSH probe attempted user authentication")
 	}
-	if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
 	}
 	found := false

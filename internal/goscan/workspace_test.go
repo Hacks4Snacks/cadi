@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 
 	"golang.org/x/tools/go/packages"
@@ -111,7 +112,7 @@ func TestColdCachePreparationPreservesManifests(t *testing.T) {
 			if requests.Load() == 0 {
 				t.Fatal("automatic preparation did not fetch the missing declared dependency")
 			}
-			if _, err := inventory.Encode([]inventory.Collection{{Result: result}}); err != nil {
+			if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 				t.Fatal(err)
 			}
 			for name, before := range originals {
@@ -173,7 +174,7 @@ func TestPreparationFailureIsExplicitAndPrivate(t *testing.T) {
 	if err == nil || requests.Load() == 0 {
 		t.Fatalf("preparation failure was not exercised: %v", err)
 	}
-	data, encodeErr := inventory.Encode([]inventory.Collection{{Result: result, Err: err}})
+	data, encodeErr := cyclonedx.Encode([]inventory.Collection{{Result: result, Err: err}})
 	if encodeErr != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") || !strings.Contains(string(data), "incomplete") {
 		t.Fatalf("unsafe or misleading failure report: %v", encodeErr)
 	}
@@ -314,7 +315,7 @@ func TestOfflineLoadErrorsAreGroupedWithDetailedMetadata(t *testing.T) {
 	if len(details) != 3 {
 		t.Fatalf("lost affected packages: %+v", details)
 	}
-	data, encodeErr := inventory.Encode([]inventory.Collection{{Collector: "go", Result: result, Err: err}})
+	data, encodeErr := cyclonedx.Encode([]inventory.Collection{{Collector: "go", Result: result, Err: err}})
 	if encodeErr != nil || !strings.Contains(string(data), "incomplete") {
 		t.Fatalf("loader failure was not preserved: %v", encodeErr)
 	}
@@ -339,7 +340,7 @@ func TestLoaderCausesDoNotExposeSourceOrCredentials(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Fatalf("wrong loader cause for %v: %v", tt.kind, err)
 		}
-		data, encodeErr := inventory.Encode([]inventory.Collection{{Result: result, Err: err}})
+		data, encodeErr := cyclonedx.Encode([]inventory.Collection{{Result: result, Err: err}})
 		if encodeErr != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") {
 			t.Fatalf("unsafe loader output: %v", encodeErr)
 		}
