@@ -17,6 +17,9 @@ func FuzzManifestProducesValidPartialInventory(f *testing.F) {
 		"apiVersion: v1\nkind: Secret\nmetadata: {name: public}\ntype: kubernetes.io/tls\ndata: {tls.crt: invalid}\n",
 		"apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: {privateKey: {algorithm: ECDSA, size: 256}}\n",
 		"apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata: {name: public}\nspec: {tls: [{hosts: [example.test]}]}\n",
+		encryptionManifest,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"profile"},"data":{"profile.yaml":"apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources:\n- resources: [secrets]\n  providers:\n  - aesgcm:\n      keys:\n      - name: primary\n        secret: PRIVATE_FUZZ_SENTINEL\n"}}`,
+		`{"apiVersion":"controlplane.cluster.x-k8s.io/v1beta2","kind":"KubeadmControlPlane","metadata":{"name":"cp","namespace":"${NAMESPACE}"},"spec":{"kubeadmConfigSpec":{"clusterConfiguration":{"caCertificateValidityPeriodDays":730,"apiServer":{"extraArgs":[{"name":"tls-min-version","value":"VersionTLS12"}]}}}}}`,
 	} {
 		f.Add([]byte(seed))
 	}

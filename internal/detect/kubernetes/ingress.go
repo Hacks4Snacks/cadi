@@ -53,7 +53,8 @@ func (r resource) ingress(spec *yaml.Node) error {
 		} else {
 			evidence.Unresolved = append(evidence.Unresolved, "kubernetes.secret-name")
 		}
-		r.result.Add(inventory.ConfiguredTLS("Kubernetes Ingress TLS configuration", certificateRefs, attributes), evidence, r.parent)
+		r.result.Add(inventory.ConfiguredTLS("Kubernetes Ingress TLS configuration",
+			inventory.TLSConfiguration{CertificateRefs: certificateRefs}, attributes), evidence, r.parent)
 	}
 	return nil
 }

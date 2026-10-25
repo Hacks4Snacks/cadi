@@ -32,7 +32,7 @@ type ResourceIdentity struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
 	Namespace  string `json:"namespace,omitempty"`
-	Name       string `json:"name"`
+	Name       string `json:"name,omitempty"`
 }
 
 // SourceContext locates a resource field within a structured input or embedded payload.
@@ -42,6 +42,18 @@ type SourceContext struct {
 	Field        string            `json:"field,omitempty"`
 	RenderedFrom string            `json:"renderedFrom,omitempty"`
 	ContentLine  int               `json:"contentLine,omitempty"`
+	Unresolved   []string          `json:"unresolved,omitempty"`
+	Embedded     []EmbeddedContext `json:"embedded,omitempty"`
+}
+
+// EmbeddedContext identifies a decoded document without replacing its containing source location.
+type EmbeddedContext struct {
+	Document   int               `json:"document,omitempty"`
+	Resource   *ResourceIdentity `json:"resource,omitempty"`
+	Field      string            `json:"field,omitempty"`
+	File       string            `json:"file,omitempty"`
+	Line       int               `json:"line,omitempty"`
+	Unresolved []string          `json:"unresolved,omitempty"`
 }
 
 // ParameterEvidence records a scoped declaration without asserting a runtime value.

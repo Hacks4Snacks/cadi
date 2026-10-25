@@ -23,7 +23,11 @@ func ConfigurationResource(resource ResourceIdentity) cdx.Component {
 	if resource.Namespace != "" {
 		name = resource.Namespace + "/" + name
 	}
-	component := cdx.Component{Type: cdx.ComponentTypeData, Name: resource.Kind + " " + name}
+	label := resource.Kind
+	if name != "" {
+		label += " " + name
+	}
+	component := cdx.Component{Type: cdx.ComponentTypeData, Name: label}
 	Property(&component, "resource.api-version", resource.APIVersion)
 	Property(&component, "resource.kind", resource.Kind)
 	if resource.Namespace != "" {
@@ -90,20 +94,72 @@ func (r *Result) AddConfiguredPrivateKey(name, algorithmName string, size int, v
 	return r.Add(key, evidence, parent)
 }
 
-// ConfiguredTLS records declared TLS use and certificate references without negotiation claims.
-func ConfiguredTLS(name string, certificateRefs []string, values []Attribute) cdx.Component {
+// TLSConfiguration contains explicitly configured TLS references and cipher-suite names.
+type TLSConfiguration struct {
+	CertificateRefs []string
+	CipherSuites    []string
+}
+
+// ConfiguredTLS records declared TLS use without negotiation claims or implicit versions.
+func ConfiguredTLS(name string, configuration TLSConfiguration, values []Attribute) cdx.Component {
 	component := cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: name,
 		CryptoProperties: &cdx.CryptoProperties{
 			AssetType:          cdx.CryptoAssetTypeProtocol,
 			ProtocolProperties: &cdx.CryptoProtocolProperties{Type: cdx.CryptoProtocolTypeTLS},
 		}}
-	if len(certificateRefs) != 0 {
-		related := make([]cdx.RelatedCryptographicAsset, 0, len(certificateRefs))
-		for _, ref := range certificateRefs {
+	if len(configuration.CertificateRefs) != 0 {
+		related := make([]cdx.RelatedCryptographicAsset, 0, len(configuration.CertificateRefs))
+		for _, ref := range configuration.CertificateRefs {
 			related = append(related, cdx.RelatedCryptographicAsset{Type: "certificate", Ref: ref})
 		}
 		component.CryptoProperties.ProtocolProperties.RelatedCryptographicAssets = &related
 	}
+	if len(configuration.CipherSuites) != 0 {
+		suites := make([]cdx.CipherSuite, 0, len(configuration.CipherSuites))
+		for _, name := range configuration.CipherSuites {
+			suites = append(suites, cdx.CipherSuite{Name: name})
+		}
+		component.CryptoProperties.ProtocolProperties.CipherSuites = &suites
+	}
 	attributes(&component, values)
 	return component
+}
+
+// ConfiguredEncryptionAlgorithm identifies an apiserver provider without inspecting key values.
+func ConfiguredEncryptionAlgorithm(provider string, writes bool, values []Attribute) (cdx.Component, bool) {
+	var algorithm cdx.Component
+	switch provider {
+	case "secretbox":
+		algorithm = Algorithm("XSalsa20-Poly1305", cdx.CryptoPrimitiveAE)
+	case "aesgcm":
+		algorithm = Algorithm("AES-GCM", cdx.CryptoPrimitiveAE)
+		algorithm.CryptoProperties.AlgorithmProperties.Mode = cdx.CryptoAlgorithmModeGCM
+	case "aescbc":
+		algorithm = Algorithm("AES-CBC", cdx.CryptoPrimitiveBlockCipher)
+		algorithm.CryptoProperties.AlgorithmProperties.Mode = cdx.CryptoAlgorithmModeCBC
+		algorithm.CryptoProperties.AlgorithmProperties.Padding = cdx.CryptoPaddingPKCS7
+	default:
+		return cdx.Component{}, false
+	}
+	functions := []cdx.CryptoFunction{cdx.CryptoFunctionDecrypt}
+	if writes {
+		functions = []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionDecrypt}
+	}
+	algorithm.CryptoProperties.AlgorithmProperties.CryptoFunctions = &functions
+	attributes(&algorithm, values)
+	return algorithm, true
+}
+
+// EncryptionKeyReference records a declared symmetric key name without material or a private digest.
+func EncryptionKeyReference(algorithmRef string, values []Attribute) cdx.Component {
+	key := cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: "Kubernetes encryption key reference",
+		CryptoProperties: &cdx.CryptoProperties{
+			AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
+			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{
+				Type:                       cdx.RelatedCryptoMaterialTypeSecretKey,
+				RelatedCryptographicAssets: &[]cdx.RelatedCryptographicAsset{{Type: "algorithm", Ref: algorithmRef}},
+			},
+		}}
+	attributes(&key, values)
+	return key
 }

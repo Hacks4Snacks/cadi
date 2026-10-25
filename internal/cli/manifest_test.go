@@ -88,6 +88,44 @@ func TestManifestFailuresArePartialAndOutputIsProtected(t *testing.T) {
 	}
 }
 
+func TestEmbeddedConfigMapUsesAllFileInputModes(t *testing.T) {
+	document := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]string{"name": "encryption"},
+		"data": map[string]string{"encryption.yaml": "apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources:\n- resources: [secrets]\n  providers:\n  - aesgcm:\n      keys:\n      - name: first\n        secret: PRIVATE_EMBEDDED_SENTINEL\n"},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "configmap.json")
+	if err := os.WriteFile(file, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	image := testutil.ImageArchive(t, map[string][]byte{"manifests/configmap.json": data})
+	for _, target := range []struct{ flag, path string }{{"--manifest", file}, {"--file", file}, {"--image", image}} {
+		t.Run(target.flag, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), []string{"scan", target.flag, target.path, "--offline"}, &stdout, &stderr)
+			if code != 0 || stderr.Len() != 0 {
+				t.Fatalf("embedded scan failed: %d %s", code, stderr.String())
+			}
+			var bom cdx.BOM
+			if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+				t.Fatal(err)
+			}
+			crypto := 0
+			for _, component := range *bom.Components {
+				if component.Type == cdx.ComponentTypeCryptographicAsset {
+					crypto++
+				}
+			}
+			if crypto != 2 || strings.Contains(stdout.String(), "PRIVATE_EMBEDDED_SENTINEL") {
+				t.Fatalf("wrong crypto coverage or secret leakage: %d assets", crypto)
+			}
+		})
+	}
+}
+
 func TestExplicitMaterialWithoutExtensionStillUsesFallback(t *testing.T) {
 	_, _, certificate, _ := testutil.Identity(t)
 	path := filepath.Join(t.TempDir(), "material")

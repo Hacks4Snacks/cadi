@@ -138,6 +138,10 @@ func (r resource) parameters(node *yaml.Node, definitions []parameter) ([]invent
 		if field == nil {
 			continue
 		}
+		if field.Kind == yaml.ScalarNode && runtimeVariable.MatchString(field.Value) {
+			unresolved = append(unresolved, definition.name)
+			continue
+		}
 		value, known, err := definition.format(field)
 		if err != nil {
 			return nil, nil, r.failure(field, definition.name+": "+err.Error())

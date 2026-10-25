@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -47,64 +47,12 @@ func (d Detector) Detect(ctx context.Context, file *input.File) (inventory.Resul
 	if err != nil {
 		return result, false, err
 	}
-	found, count, documentNumber := false, 0, 0
-	var failures error
-	for _, chunk := range splitDocuments(data) {
-		if err := ctx.Err(); err != nil {
-			return result, found, errors.Join(failures, err)
-		}
-		var document yaml.Node
-		decoder := yaml.NewDecoder(bytes.NewReader(chunk.data))
-		decodeErr := decoder.Decode(&document)
-		if errors.Is(decodeErr, io.EOF) {
-			continue
-		}
-		documentNumber++
-		if decodeErr == nil {
-			var extra yaml.Node
-			if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-				decodeErr = fmt.Errorf("expected a single document")
-			}
-		}
-		if decodeErr != nil {
-			if bytes.Contains(chunk.data, []byte("{{")) {
-				templateNote(&result, file, documentNumber, chunk.line)
-				found = true
-				continue
-			}
-			if d.Strict || looksLikeResource(chunk.data) {
-				found = true
-				failures = errors.Join(failures, fmt.Errorf("document %d: invalid YAML/JSON", documentNumber))
-			}
-			continue
-		}
-		if len(document.Content) == 0 {
-			continue
-		}
-		root := document.Content[0]
-		header := fields(root)
-		if header["apiVersion"] == nil || header["kind"] == nil {
-			continue
-		}
-		found = true
-		if err := validateNodes(ctx, root, 0, &count); err != nil {
-			if errors.Is(err, errComplexMappingKey) && bytes.Contains(chunk.data, []byte("{{")) {
-				templateNote(&result, file, documentNumber, chunk.line)
-				continue
-			}
-			failures = errors.Join(failures, fmt.Errorf("document %d: %w", documentNumber, err))
-			continue
-		}
-		evidence := file.Evidence
-		evidence.Kind, evidence.Collector = "configured", "kubernetes"
-		evidence.Context = &inventory.SourceContext{Document: documentNumber, RenderedFrom: renderedSource(&document)}
-		scanner := resource{result: &result, evidence: evidence, parent: file.Parent, offset: chunk.line - 1}
-		failures = errors.Join(failures, scanner.inspect(ctx, root, "", inventory.ResourceIdentity{}))
-	}
+	scanner := resource{result: &result, evidence: file.Evidence, parent: file.Parent, budget: &decodeBudget{}}
+	found, err := scanner.documents(ctx, data, d.Strict)
 	if found {
 		result.Metadata("analysis-scope", "local Kubernetes declarations and embedded material only; no Helm rendering, cluster access, issuance, deployment, key-pair validation, trust, or protocol negotiation is established")
 	}
-	return result, found, failures
+	return result, found, err
 }
 
 type resource struct {
@@ -113,10 +61,12 @@ type resource struct {
 	parent   string
 	prefix   string
 	offset   int
+	budget   *decodeBudget
 }
 
 var resourceToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 var objectName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+var runtimeVariable = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 func (r resource) inspect(ctx context.Context, node *yaml.Node, prefix string, implied inventory.ResourceIdentity) error {
 	if err := ctx.Err(); err != nil {
@@ -148,6 +98,7 @@ func (r resource) inspect(ctx context.Context, node *yaml.Node, prefix string, i
 	}
 	if apiVersion == "v1" && kind == "List" ||
 		apiVersion == "v1" && kind == "SecretList" ||
+		apiVersion == "v1" && kind == "ConfigMapList" ||
 		apiVersion == "cert-manager.io/v1" && kind == "CertificateList" ||
 		apiVersion == "networking.k8s.io/v1" && kind == "IngressList" {
 		items := object["items"]
@@ -164,30 +115,63 @@ func (r resource) inspect(ctx context.Context, node *yaml.Node, prefix string, i
 		}
 		return failures
 	}
+	bootstrap := bootstrapResource(apiVersion, kind)
+	pure := pureConfiguration(apiVersion, kind)
 	if !(apiVersion == "cert-manager.io/v1" && kind == "Certificate") &&
 		!(apiVersion == "v1" && kind == "Secret") &&
-		!(apiVersion == "networking.k8s.io/v1" && kind == "Ingress") {
-		r.note(node, "unsupported Kubernetes resource kind: "+apiVersion+" "+kind)
+		!(apiVersion == "v1" && kind == "ConfigMap") &&
+		!(apiVersion == "networking.k8s.io/v1" && kind == "Ingress") && !bootstrap && !pure {
+		if len(r.evidence.Context.Embedded) > 0 {
+			r.result.Metadata("unsupported-embedded-kind", apiVersion+" "+kind)
+		} else {
+			r.note(node, "unsupported Kubernetes resource kind: "+apiVersion+" "+kind)
+		}
 		return nil
 	}
-	metadata := fields(object["metadata"])
+	metadata := map[string]*yaml.Node{}
+	if !pure {
+		metadata = fields(object["metadata"])
+	}
 	if templateValue(metadata["name"]) || templateValue(metadata["namespace"]) {
 		r.note(node, "unrendered resource identity; supply rendered Helm YAML/JSON")
 		return nil
 	}
 	name, known, nameErr := textValue(metadata["name"])
 	namespace, _, namespaceErr := textValue(metadata["namespace"])
-	if nameErr != nil || namespaceErr != nil || !known || len(name) > 253 || !objectName.MatchString(name) ||
-		namespace != "" && (len(namespace) > 63 || !objectName.MatchString(namespace) || strings.Contains(namespace, ".")) {
+	var unresolved []string
+	if bootstrap || len(r.evidence.Context.Embedded) > 0 {
+		if runtimeVariable.MatchString(name) && objectName.MatchString(runtimeVariable.ReplaceAllString(name, "value")) {
+			name, known = "", true
+			unresolved = append(unresolved, "resource.name")
+		}
+		if runtimeVariable.MatchString(namespace) && objectName.MatchString(runtimeVariable.ReplaceAllString(namespace, "value")) {
+			namespace = ""
+			unresolved = append(unresolved, "resource.namespace")
+		}
+	}
+	if !pure && (nameErr != nil || namespaceErr != nil || !known || len(name) > 253 ||
+		(name == "" && !slices.Contains(unresolved, "resource.name")) ||
+		(name != "" && !objectName.MatchString(name)) ||
+		namespace != "" && (len(namespace) > 63 || !objectName.MatchString(namespace) || strings.Contains(namespace, "."))) {
 		return r.failure(node, "supported resource requires a valid metadata.name and optional namespace")
 	}
 	identity := inventory.ResourceIdentity{APIVersion: apiVersion, Kind: kind, Namespace: namespace, Name: name}
 	context := *r.evidence.Context
-	context.Resource = &identity
+	context.Embedded = slices.Clone(context.Embedded)
+	if len(context.Embedded) == 0 {
+		context.Resource, context.Unresolved = &identity, unresolved
+		r.evidence.Line = r.offset + node.Line
+	} else {
+		last := &context.Embedded[len(context.Embedded)-1]
+		last.Resource = &identity
+		last.Unresolved = append(slices.Clone(last.Unresolved), unresolved...)
+	}
 	r.evidence.Context = &context
 	r.evidence.Symbol = apiVersion + "." + kind
-	r.evidence.Line = r.offset + node.Line
 	r.parent = r.result.Add(inventory.ConfigurationResource(identity), r.at(node, ""), r.parent)
+	if bootstrap || pure && kind != "EncryptionConfiguration" {
+		return r.bootstrap(ctx, node, kind)
+	}
 	switch kind {
 	case "Certificate":
 		return r.certificate(object["spec"])
@@ -195,6 +179,10 @@ func (r resource) inspect(ctx context.Context, node *yaml.Node, prefix string, i
 		return r.secret(ctx, node)
 	case "Ingress":
 		return r.ingress(object["spec"])
+	case "ConfigMap":
+		return r.configMap(ctx, node)
+	case "EncryptionConfiguration":
+		return r.encryption(node)
 	}
 	return nil
 }
@@ -202,17 +190,37 @@ func (r resource) inspect(ctx context.Context, node *yaml.Node, prefix string, i
 func (r resource) at(node *yaml.Node, field string) inventory.Evidence {
 	evidence := r.evidence
 	context := *evidence.Context
-	context.Field = r.prefix + field
-	evidence.Context = &context
-	if node != nil {
-		evidence.Line = r.offset + node.Line
+	context.Embedded = slices.Clone(context.Embedded)
+	if len(context.Embedded) == 0 {
+		context.Field = r.prefix + field
+		if node != nil {
+			evidence.Line = r.offset + node.Line
+		}
+	} else {
+		last := &context.Embedded[len(context.Embedded)-1]
+		last.Field = r.prefix + field
+		if node != nil {
+			last.Line = r.offset + node.Line
+		}
 	}
+	evidence.Context = &context
 	evidence.Unresolved, evidence.Parameters = nil, nil
 	return evidence
 }
 
 func (r resource) failure(node *yaml.Node, message string) error {
+	if len(r.evidence.Context.Embedded) > 0 {
+		return fmt.Errorf("document %d, line %d, embedded line %d: %s",
+			r.evidence.Context.Document, r.evidence.Line, r.offset+nodeLine(node), message)
+	}
 	return fmt.Errorf("document %d, line %d: %s", r.evidence.Context.Document, r.at(node, "").Line, message)
+}
+
+func nodeLine(node *yaml.Node) int {
+	if node == nil {
+		return 0
+	}
+	return node.Line
 }
 
 func (r resource) note(node *yaml.Node, message string) {
@@ -223,11 +231,6 @@ func (r resource) note(node *yaml.Node, message string) {
 type documentChunk struct {
 	data []byte
 	line int
-}
-
-func templateNote(result *inventory.Result, file *input.File, document, line int) {
-	result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: file.Evidence.Location,
-		Line: line, Message: fmt.Sprintf("document %d: unrendered template not analyzed; supply rendered Helm YAML/JSON", document)})
 }
 
 func splitDocuments(data []byte) []documentChunk {
