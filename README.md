@@ -234,8 +234,8 @@ are recorded as qualified alternatives rather than unconditional key sizes.
 They are matched by field/type identity and retain their source locations.
 For example, a factory assigning 4096 bits adds
 `ciphertrail:key-size-bits:declared = 4096` and a `field-initializer` parameter
-fact, without setting an unconditional `ciphertrail:key-size-bits` or native
-parameter set on an unconstrained method. Zero-value receivers, later mutation, other constructions, and whether
+fact, without setting an unconditional native parameter set on an unconstrained
+method. Zero-value receivers, later mutation, other constructions, and whether
 the factory is ever called are not proven away.
 Cipher-mode findings do not currently resolve their underlying block cipher.
 TLS struct initializers record explicit minimum/maximum versions, client-auth
@@ -770,8 +770,13 @@ evidence occurrences carry the inventory. Each native occurrence has a stable,
 BOM-wide unique `bom-ref`; its location, line, and symbol are recorded only there.
 Namespaced properties add:
 
-- `ciphertrail:provenance`: an `occurrence` reference, `present` / `configured` /
-  `observed` classification, collector, observation time when applicable, and
+- `ciphertrail:evidence-kind` and `ciphertrail:collector`: flat classification
+  and collector fields when every evidence record for a component is simple
+  and agrees on both values. These apply to all of its native occurrences.
+- `ciphertrail:provenance`: occurrence-linked records when evidence has differing
+  classifications/collectors or additional detail: observation time, a
+  location-free symbol, source context, unresolved parameters, or declaration
+  facts. These retain `present` / `configured` / `observed` classification, collector, and
   an optional `unresolved` parameter-name summary. Qualified parameter facts
   are grouped by shared `basis` and `limitation`; each group's `values` retain
   their names, values, and definition locations. Definition locations describe
@@ -787,7 +792,21 @@ Namespaced properties add:
 - Resolved public parameters and qualified `:declared` alternatives. Missing
   parameters are not replaced with invented values or defaults.
 
-Supplemental provenance is associated with its own occurrence, so declarations
+Collectors emit facts directly into their native fields: Go API identity is
+already in `evidence.occurrences.symbol`, and a mapped algorithm key-size value
+is written to `cryptoProperties.algorithmProperties.parameterSetIdentifier`
+without also emitting `ciphertrail:key-size-bits`. Parameters with no native
+mapping, including qualified declarations, remain properties.
+
+The exporter does not parse source-symbol strings or match algorithm-name
+patterns to decide which properties to remove. It preserves properties supplied
+by collectors and selects the provenance shape from typed evidence records.
+Both dependency-output modes follow the same rules. Removing redundant facts
+at collection time can change component and occurrence references because
+identity includes collected metadata; regenerated references and graph links
+remain deterministic and internally consistent.
+
+Detailed supplemental provenance is associated with its own occurrence, so declarations
 from one location cannot hide unresolved parameters or observations elsewhere.
 Evidence without a location remains component-scoped; no occurrence is invented,
 and a symbol is retained in supplemental provenance if one was supplied.
@@ -805,7 +824,16 @@ are grouped with an occurrence count; every original location remains in the
 CBOM. Exclusions and recognized report files are listed in `ciphertrail:scope`,
 not printed as hundreds of individual notes.
 
-For example, a decoded `ciphertrail:provenance` property can contain:
+For simple source evidence, the component properties are:
+
+```json
+[
+  { "name": "ciphertrail:collector", "value": "go" },
+  { "name": "ciphertrail:evidence-kind", "value": "configured" }
+]
+```
+
+For richer evidence, a decoded `ciphertrail:provenance` property can contain:
 
 ```json
 {
@@ -830,9 +858,11 @@ For example, a decoded `ciphertrail:provenance` property can contain:
 }
 ```
 
-Consumers should join `provenance.occurrence` to `evidence.occurrences[].bom-ref`, read grouped
-`parameters[].values`, and use `unresolved` rather than testing property values
-for the string `"unknown"`. Existing reports can be replaced by rescanning.
+Consumers should read the flat classification for simple components. For detailed
+records, join `provenance.occurrence` to `evidence.occurrences[].bom-ref`, read
+grouped `parameters[].values`, and use `unresolved` rather than testing property
+values for the string `"unknown"`. The optional `--summary` understands both
+forms. Existing reports can be replaced by rescanning.
 The output is CycloneDX 1.7.
 
 The complete schema bundle, including `cryptography-defs.schema.json`, is pinned

@@ -55,6 +55,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	components := make(map[string]*cdx.Component)
 	edges := make(map[string]map[string]bool)
 	owners := make(map[string]map[string]bool)
+	provenances := make(map[string][]provenance)
 	var metadata []cdx.Property
 	incomplete := false
 	for _, collection := range collections {
@@ -108,9 +109,11 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 				}
 				*component.Properties = append(*component.Properties, *entry.Component.Properties...)
 			}
-			if err := appendProvenance(component, entry.Evidence); err != nil {
+			record, err := appendProvenance(component, entry.Evidence)
+			if err != nil {
 				return nil, err
 			}
+			provenances[ref] = append(provenances[ref], record)
 			if edges[ref] == nil {
 				edges[ref] = make(map[string]bool)
 			}
@@ -127,9 +130,8 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 		if component.CryptoProperties != nil && component.Type != cdx.ComponentTypeCryptographicAsset {
 			return nil, fmt.Errorf("component %q has crypto properties but is not a cryptographic asset", component.Name)
 		}
-		if component.Properties != nil {
-			slices.SortFunc(*component.Properties, compareProperty)
-			*component.Properties = slices.Compact(*component.Properties)
+		if err := appendEvidenceProperties(component, provenances[ref]); err != nil {
+			return nil, err
 		}
 		occurrences := *component.Evidence.Occurrences
 		slices.SortFunc(occurrences, func(a, b cdx.EvidenceOccurrence) int {
@@ -142,6 +144,10 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 			component.Evidence = nil
 		} else {
 			component.Evidence.Occurrences = &occurrences
+		}
+		if component.Properties != nil {
+			slices.SortFunc(*component.Properties, compareProperty)
+			*component.Properties = slices.Compact(*component.Properties)
 		}
 		for _, target := range cryptoReferences(component) {
 			if _, ok := components[target]; !ok {
@@ -313,7 +319,7 @@ func cryptoReferences(component *cdx.Component) []string {
 	return refs
 }
 
-func appendProvenance(component *cdx.Component, evidence inventory.Evidence) error {
+func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (provenance, error) {
 	record := provenance{Kind: evidence.Kind, Collector: evidence.Collector, Time: evidence.Time, Context: evidence.Context}
 	if evidence.Location != "" {
 		occurrence := cdx.EvidenceOccurrence{Location: evidence.Location, Symbol: evidence.Symbol}
@@ -325,7 +331,7 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) err
 		if evidence.Context != nil {
 			context, err := json.Marshal(evidence.Context)
 			if err != nil {
-				return fmt.Errorf("encode occurrence context: %w", err)
+				return record, fmt.Errorf("encode occurrence context: %w", err)
 			}
 			parts = append(parts, string(context))
 		}
@@ -367,15 +373,41 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) err
 		})
 		record.Parameters[i].Values = slices.Compact(values)
 	}
-	if record.Kind == "" && record.Collector == "" && record.Time == "" && record.Symbol == "" && record.Context == nil &&
-		len(record.Unresolved) == 0 && len(record.Parameters) == 0 {
+	return record, nil
+}
+
+func (p provenance) detailed() bool {
+	return p.Time != "" || p.Symbol != "" || p.Context != nil || len(p.Unresolved) != 0 || len(p.Parameters) != 0
+}
+
+func appendEvidenceProperties(component *cdx.Component, records []provenance) error {
+	if len(records) == 0 {
 		return nil
 	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("encode provenance: %w", err)
+	first := records[0]
+	simple := !first.detailed()
+	for _, record := range records[1:] {
+		simple = simple && !record.detailed() && record.Kind == first.Kind && record.Collector == first.Collector
 	}
-	inventory.Property(component, "provenance", string(data))
+	if simple {
+		if first.Kind != "" {
+			inventory.Property(component, "evidence-kind", first.Kind)
+		}
+		if first.Collector != "" {
+			inventory.Property(component, "collector", first.Collector)
+		}
+		return nil
+	}
+	for _, record := range records {
+		if record.Kind == "" && record.Collector == "" && !record.detailed() {
+			continue
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("encode provenance: %w", err)
+		}
+		inventory.Property(component, "provenance", string(data))
+	}
 	return nil
 }
 

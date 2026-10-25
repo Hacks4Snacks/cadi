@@ -202,6 +202,212 @@ func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testin
 	}
 }
 
+func TestNativeFirstRSAPropertiesAndStableEvidence(t *testing.T) {
+	component := inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE)
+	component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = "4096"
+	component.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionKeygen}
+	evidence := inventory.Evidence{Kind: "configured", Collector: "go", Location: "helper.go", Line: 64,
+		Symbol: "func crypto/rsa.GenerateKey(random io.Reader, bits int) (*crypto/rsa.PrivateKey, error)"}
+	var result inventory.Result
+	ref := result.Add(component, evidence, "")
+	original, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := 64
+	expectedOccurrence := inventory.Ref("occurrence", ref, occurrenceKey(cdx.EvidenceOccurrence{
+		Location: evidence.Location, Line: &line, Symbol: evidence.Symbol,
+	}))
+	for _, full := range []bool{false, true} {
+		bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{IncludeDependencies: full})
+		got := (*bom.Components)[0]
+		if got.BOMRef != ref || !reflect.DeepEqual(got.CryptoProperties, component.CryptoProperties) ||
+			got.Evidence == nil || len(*got.Evidence.Occurrences) != 1 || (*got.Evidence.Occurrences)[0].BOMRef != expectedOccurrence {
+			t.Fatal("native fields or stable references changed")
+		}
+		properties := map[string]string{}
+		for _, property := range *got.Properties {
+			properties[property.Name] = property.Value
+		}
+		expected := map[string]string{"ciphertrail:evidence-kind": "configured", "ciphertrail:collector": "go"}
+		if !reflect.DeepEqual(properties, expected) {
+			t.Fatalf("RSA extensions were not compacted: %v", properties)
+		}
+	}
+	after, err := json.Marshal(result)
+	if err != nil || string(original) != string(after) {
+		t.Fatal("export normalization modified collector-owned facts")
+	}
+}
+
+func TestSimpleProvenanceIsFlatOnlyWhenUniform(t *testing.T) {
+	for _, test := range []struct {
+		name                   string
+		secondKind, secondTool string
+		simple                 bool
+	}{
+		{"uniform", "configured", "go", true},
+		{"mixed-kind", "observed", "go", false},
+		{"mixed-collector", "configured", "python", false},
+		{"missing-classification", "", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			component := inventory.Algorithm("shared", cdx.CryptoPrimitivePKE)
+			component.BOMRef = "shared"
+			var result inventory.Result
+			result.Add(component, inventory.Evidence{Kind: "configured", Collector: "go", Location: "a.go", Line: 1}, "")
+			result.Add(component, inventory.Evidence{Kind: test.secondKind, Collector: test.secondTool, Location: "b.go", Line: 2}, "")
+			bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+			got := (*bom.Components)[0]
+			flat, detailed := 0, 0
+			for _, property := range *got.Properties {
+				switch property.Name {
+				case "ciphertrail:evidence-kind", "ciphertrail:collector":
+					flat++
+				case "ciphertrail:provenance":
+					detailed++
+					var record provenance
+					if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+						t.Fatal(err)
+					}
+					if record.Occurrence == "" {
+						t.Fatal("mixed evidence lost its occurrence association")
+					}
+				}
+			}
+			if test.simple && (flat != 2 || detailed != 0) || !test.simple && (flat != 0 || detailed == 0) ||
+				len(*got.Evidence.Occurrences) != 2 {
+				t.Fatalf("incorrect provenance shape: flat=%d detailed=%d", flat, detailed)
+			}
+		})
+	}
+}
+
+func TestExporterDoesNotInterpretAPISymbolStrings(t *testing.T) {
+	for _, test := range []struct {
+		name, api, symbol, location string
+	}{
+		{"exact", "crypto/rsa.GenerateKey", "crypto/rsa.GenerateKey", "main.go"},
+		{"signature", "crypto/rsa.GenerateKey", "func crypto/rsa.GenerateKey(random io.Reader, bits int) (*crypto/rsa.PrivateKey, error)", "main.go"},
+		{"method", "crypto/rsa.Sign", "func (*crypto/rsa.PrivateKey).Sign(random io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error)", "main.go"},
+		{"prefix-only", "crypto/rsa.GenerateKey", "func crypto/rsa.GenerateKeyOther() error", "main.go"},
+		{"different-package", "crypto/rsa.Sign", "func (*other.PrivateKey).Sign() error", "main.go"},
+		{"package-prefix-only", "crypto/rsa.Sign", "func (*crypto/rsa.extra.PrivateKey).Sign() error", "main.go"},
+		{"no-symbol", "crypto/rsa.GenerateKey", "", "main.go"},
+		{"no-location", "crypto/rsa.GenerateKey", "crypto/rsa.GenerateKey", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			component := inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE)
+			inventory.Property(&component, "api", test.api)
+			var result inventory.Result
+			result.Add(component, inventory.Evidence{Kind: "configured", Collector: "go", Location: test.location, Symbol: test.symbol}, "")
+			bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+			retained := false
+			for _, property := range *(*bom.Components)[0].Properties {
+				retained = retained || property.Name == "ciphertrail:api" && property.Value == test.api
+			}
+			if !retained {
+				t.Fatal("exporter interpreted source-symbol text to discard a supplied property")
+			}
+		})
+	}
+}
+
+func TestExporterDoesNotInferPropertyMeaningFromAlgorithmNames(t *testing.T) {
+	for _, test := range []struct {
+		name, parameter, size string
+		primitive             cdx.CryptoPrimitive
+	}{
+		{"RSA", "4096", "4096", cdx.CryptoPrimitivePKE},
+		{"AES", "256", "256", cdx.CryptoPrimitiveBlockCipher},
+		{"RSA", "4096", "2048", cdx.CryptoPrimitivePKE},
+		{"RSA", "", "4096", cdx.CryptoPrimitivePKE},
+		{"SHA-256", "256", "256", cdx.CryptoPrimitiveHash},
+		{"SHAKE128", "128", "128", cdx.CryptoPrimitiveXOF},
+		{"ML-KEM", "768", "768", cdx.CryptoPrimitiveKEM},
+		{"ML-DSA", "65", "65", cdx.CryptoPrimitiveSignature},
+		{"HMAC-SHA-256", "256", "256", cdx.CryptoPrimitiveMAC},
+		{"Unknown PKE parameters", "4096", "4096", cdx.CryptoPrimitivePKE},
+		{"ECDSA", "256", "256", cdx.CryptoPrimitiveSignature},
+	} {
+		t.Run(test.name+"/"+test.parameter+"/"+test.size, func(t *testing.T) {
+			component := inventory.Algorithm(test.name, test.primitive)
+			component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = test.parameter
+			inventory.Property(&component, "key-size-bits", test.size)
+			inventory.Property(&component, "key-size-bits:declared", test.size)
+			inventory.Property(&component, "scope", "declared configuration only")
+			var result inventory.Result
+			result.Add(component, inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go"}, "")
+			bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+			properties := map[string]string{}
+			for _, property := range *(*bom.Components)[0].Properties {
+				properties[property.Name] = property.Value
+			}
+			if properties["ciphertrail:key-size-bits"] != test.size || properties["ciphertrail:key-size-bits:declared"] != test.size ||
+				properties["ciphertrail:scope"] != "declared configuration only" {
+				t.Fatalf("lost non-native or semantically distinct metadata: %v", properties)
+			}
+		})
+	}
+}
+
+func TestNativeKeySizeAndEmptyExtensions(t *testing.T) {
+	size := 4096
+	component := cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: "Private key",
+		CryptoProperties: &cdx.CryptoProperties{AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
+			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{
+				Type: cdx.RelatedCryptoMaterialTypePrivateKey, Size: &size,
+			}}}
+	var result inventory.Result
+	ref := result.Add(component, inventory.Evidence{Location: "key.go", Symbol: "example.Key"}, "")
+	bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+	got := (*bom.Components)[0]
+	if got.Properties != nil || got.Evidence == nil || got.BOMRef != ref || *got.CryptoProperties.RelatedCryptoMaterialProperties.Size != 4096 {
+		t.Fatal("native key fields were lost or an empty extension array remains")
+	}
+}
+
+func TestSingleDetailedEvidenceDoesNotFlatten(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		evidence inventory.Evidence
+	}{
+		{"time", inventory.Evidence{Kind: "observed", Collector: "tls", Location: "localhost:443", Time: "2026-10-25T00:00:00Z"}},
+		{"context", inventory.Evidence{Kind: "configured", Collector: "kubernetes", Location: "config.yaml", Context: &inventory.SourceContext{Document: 1, Field: "/spec"}}},
+		{"unresolved", inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go", Unresolved: []string{"key-size-bits"}}},
+		{"declaration", inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go", Parameters: []inventory.ParameterEvidence{
+			{Name: "key-size-bits", Value: "4096", Location: "policy.go", Line: 8, Basis: "declared", Limitation: "mutable policy"},
+		}}},
+		{"location-free-symbol", inventory.Evidence{Kind: "present", Collector: "binary", Symbol: "public-symbol"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var result inventory.Result
+			result.Add(inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE), test.evidence, "")
+			bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+			got := (*bom.Components)[0]
+			records := 0
+			for _, property := range *got.Properties {
+				if property.Name == "ciphertrail:evidence-kind" || property.Name == "ciphertrail:collector" {
+					t.Fatal("detailed evidence was flattened")
+				}
+				if property.Name == "ciphertrail:provenance" {
+					records++
+					var record provenance
+					if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+						t.Fatal(err)
+					}
+					if !record.detailed() || record.Kind != test.evidence.Kind || record.Collector != test.evidence.Collector {
+						t.Fatal("detailed evidence fields were lost")
+					}
+				}
+			}
+			if records != 1 {
+				t.Fatalf("detailed records=%d; want 1", records)
+			}
+		})
+	}
+}
+
 func TestFailureBeforeAnyFindingsStillProducesValidPartialBOM(t *testing.T) {
 	data, err := Encode([]inventory.Collection{{Collector: "tls", Target: "localhost:443", Err: errors.New("connection failed")}})
 	if err != nil {

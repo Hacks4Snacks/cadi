@@ -92,10 +92,11 @@ func parameter(component *cdx.Component, evidence *inventory.Evidence, name stri
 		evidence.Unresolved = append(evidence.Unresolved, name)
 		return
 	}
-	inventory.Property(component, name, fmt.Sprint(number))
 	if name == "key-size-bits" && number > 0 && component.CryptoProperties.AlgorithmProperties != nil {
 		component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = fmt.Sprint(number)
+		return
 	}
+	inventory.Property(component, name, fmt.Sprint(number))
 }
 
 func byteCountParameter(component *cdx.Component, evidence *inventory.Evidence, name string, argument value) {

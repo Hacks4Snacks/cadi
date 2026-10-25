@@ -102,11 +102,6 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 	if path != "crypto/"+family && path != "golang.org/x/crypto/"+family {
 		return cdx.Component{}, false
 	}
-	algorithm := func(name string, primitive cdx.CryptoPrimitive) cdx.Component {
-		c := inventory.Algorithm(name, primitive)
-		inventory.Property(&c, "api", path+"."+nameOfCall(call))
-		return c
-	}
 	arg := func(index int) ssa.Value {
 		if index >= 0 && index < len(call.Args) {
 			return call.Args[index]
@@ -123,9 +118,10 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 			value *= 8
 		}
 		if known {
-			inventory.Property(c, label, fmt.Sprint(value))
 			if label == "key-size-bits" && c.CryptoProperties.AlgorithmProperties != nil {
 				c.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = fmt.Sprint(value)
+			} else {
+				inventory.Property(c, label, fmt.Sprint(value))
 			}
 		} else {
 			evidence.Unresolved = append(evidence.Unresolved, label)
@@ -136,20 +132,20 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		if strings.HasPrefix(hash, "SHAKE") {
 			primitive = cdx.CryptoPrimitiveXOF
 		}
-		return algorithm(hash, primitive), true
+		return inventory.Algorithm(hash, primitive), true
 	}
 	switch family {
 	case "elliptic":
 		if api.receiver == "" && (name == "P224" || name == "P256" || name == "P384" || name == "P521") {
 			curve := "P-" + strings.TrimPrefix(name, "P")
-			c := algorithm("Elliptic curve "+curve, cdx.CryptoPrimitiveOther)
+			c := inventory.Algorithm("Elliptic curve "+curve, cdx.CryptoPrimitiveOther)
 			c.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID(curve)
 			return c, true
 		}
 	case "rsa":
 		switch name {
 		case "GenerateKey", "GenerateMultiPrimeKey", "EncryptOAEP", "DecryptOAEP", "EncryptPKCS1v15", "DecryptPKCS1v15", "DecryptPKCS1v15SessionKey", "SignPKCS1v15", "VerifyPKCS1v15", "SignPSS", "VerifyPSS", "Sign", "Decrypt":
-			c := algorithm("RSA", cdx.CryptoPrimitivePKE)
+			c := inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE)
 			function := cdx.CryptoFunctionKeygen
 			switch {
 			case strings.HasPrefix(name, "Sign"), strings.HasPrefix(name, "Verify"):
@@ -196,7 +192,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 					label = "XChaCha20-Poly1305"
 				}
 			}
-			c := algorithm(label, primitive)
+			c := inventory.Algorithm(label, primitive)
 			parameter(&c, "key-size-bits", 0, true)
 			return c, true
 		}
@@ -206,7 +202,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 			if family == "ed25519" {
 				label = "Ed25519"
 			}
-			c := algorithm(label, cdx.CryptoPrimitiveSignature)
+			c := inventory.Algorithm(label, cdx.CryptoPrimitiveSignature)
 			if label == "Ed25519" {
 				c.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID("Ed25519")
 			} else if name == "GenerateKey" {
@@ -224,7 +220,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 	case "ecdh", "curve25519":
 		if name == "X25519" || name == "P256" || name == "P384" || name == "P521" || name == "ECDH" || name == "GenerateKey" || name == "NewPrivateKey" || name == "NewPublicKey" {
-			c := algorithm("ECDH", cdx.CryptoPrimitiveKeyAgree)
+			c := inventory.Algorithm("ECDH", cdx.CryptoPrimitiveKeyAgree)
 			if name == "X25519" || strings.HasPrefix(name, "P") && len(name) == 4 {
 				curve := name
 				if strings.HasPrefix(curve, "P") {
@@ -238,7 +234,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 	case "hmac":
 		if name == "New" {
-			c := algorithm("HMAC", cdx.CryptoPrimitiveMAC)
+			c := inventory.Algorithm("HMAC", cdx.CryptoPrimitiveMAC)
 			if function, ok := arg(0).(*ssa.Function); ok && function.Pkg != nil {
 				hashFamily := function.Pkg.Pkg.Name()
 				hashPath := function.Pkg.Pkg.Path()
@@ -254,7 +250,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 	case "bcrypt", "scrypt", "argon2", "pbkdf2", "hkdf":
 		switch name {
 		case "GenerateFromPassword", "CompareHashAndPassword", "Key", "IDKey", "New", "Extract", "Expand":
-			c := algorithm(family, cdx.CryptoPrimitiveKDF)
+			c := inventory.Algorithm(family, cdx.CryptoPrimitiveKDF)
 			switch family {
 			case "bcrypt":
 				if name == "GenerateFromPassword" {
@@ -305,7 +301,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 	case "ssh":
 		if name == "FingerprintSHA256" && api.receiver == "" {
-			c := algorithm("SHA-256", cdx.CryptoPrimitiveHash)
+			c := inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash)
 			c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionDigest}
 			inventory.Property(&c, "purpose", "SSH public-key fingerprint")
 			return c, true
@@ -318,11 +314,11 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 	case "rand":
 		if name == "Read" || name == "Text" || name == "Int" || name == "Prime" {
-			return algorithm("Go CSPRNG", cdx.CryptoPrimitiveOther), true
+			return inventory.Algorithm("Go CSPRNG", cdx.CryptoPrimitiveOther), true
 		}
 	case "mlkem":
 		if strings.HasPrefix(name, "GenerateKey") || strings.HasPrefix(name, "NewDecapsulationKey") || name == "Encapsulate" || name == "Decapsulate" {
-			c := algorithm("ML-KEM", cdx.CryptoPrimitiveKEM)
+			c := inventory.Algorithm("ML-KEM", cdx.CryptoPrimitiveKEM)
 			for _, parameter := range []string{"512", "768", "1024"} {
 				if strings.HasSuffix(name, parameter) {
 					c.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = parameter
@@ -337,7 +333,7 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 			"NewCFBEncrypter": "cfb", "NewCFBDecrypter": "cfb",
 		}
 		if mode := modes[name]; mode != "" {
-			c := algorithm("Block cipher ("+strings.ToUpper(string(mode))+")", cdx.CryptoPrimitiveBlockCipher)
+			c := inventory.Algorithm("Block cipher ("+strings.ToUpper(string(mode))+")", cdx.CryptoPrimitiveBlockCipher)
 			c.CryptoProperties.AlgorithmProperties.Mode = mode
 			if mode == cdx.CryptoAlgorithmModeGCM {
 				c.CryptoProperties.AlgorithmProperties.Primitive = cdx.CryptoPrimitiveAE
@@ -369,11 +365,6 @@ func addConfiguredParameters(component *cdx.Component, evidence *inventory.Evide
 		evidence.Parameters = append(evidence.Parameters, fact)
 		inventory.Property(component, "key-size-bits:declared", fact.Value)
 	}
-}
-
-func nameOfCall(call *ssa.CallCommon) string {
-	_, name, _ := callSymbol(call)
-	return name
 }
 
 func operation(name string, kind cdx.CryptoAssetType) cdx.Component {

@@ -38,6 +38,49 @@ func fixture(t *testing.T, source string) string {
 	return directory
 }
 
+func TestGoRSAUsesNativeFieldsInBothOutputScopes(t *testing.T) {
+	directory := fixture(t, `package example
+import ("crypto/rand"; "crypto/rsa")
+func Generate() { _, _ = rsa.GenerateKey(rand.Reader, 4096) }
+`)
+	result, err := (Source{Path: directory, Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Collector: "go", Result: result}},
+			cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bom cdx.BOM
+		if err := json.Unmarshal(data, &bom); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, component := range *bom.Components {
+			if component.Type != cdx.ComponentTypeCryptographicAsset || component.Name != "RSA" {
+				continue
+			}
+			found = true
+			if component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "4096" ||
+				component.Evidence == nil || !strings.Contains((*component.Evidence.Occurrences)[0].Symbol, "crypto/rsa.GenerateKey") {
+				t.Fatal("native RSA facts or source API evidence were lost")
+			}
+			properties := map[string]string{}
+			for _, property := range *component.Properties {
+				properties[property.Name] = property.Value
+			}
+			if len(properties) != 2 || properties["ciphertrail:evidence-kind"] != "configured" || properties["ciphertrail:collector"] != "go" {
+				t.Fatalf("RSA did not use simple native-first output: %v", properties)
+			}
+		}
+		if !found {
+			t.Fatal("RSA finding missing")
+		}
+	}
+}
+
 func TestGoSourceSymbolsParametersAndGaps(t *testing.T) {
 	directory := fixture(t, `package example
 import (
@@ -92,6 +135,17 @@ func Run(dynamic int) {
 		}
 		if entry.Evidence.Line == 0 || entry.Evidence.Location == "" || entry.Evidence.Kind != "configured" {
 			t.Fatal("missing source evidence")
+		}
+		if entry.Component.Properties != nil {
+			for _, property := range *entry.Component.Properties {
+				if property.Name == "ciphertrail:api" {
+					t.Fatal("typed source API evidence was duplicated as a property")
+				}
+				if property.Name == "ciphertrail:key-size-bits" && p.AlgorithmProperties != nil &&
+					p.AlgorithmProperties.ParameterSetIdentifier != "" {
+					t.Fatal("a native algorithm parameter was duplicated as a property")
+				}
+			}
 		}
 	}
 	if !rsaKnown || !rsaUnknown || !aes || !certificate || !ssh || !tls {

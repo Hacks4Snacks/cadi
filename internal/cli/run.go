@@ -232,6 +232,12 @@ func writeSummary(writer io.Writer, data []byte, incomplete bool) error {
 			var kinds, locations []string
 			if asset.Properties != nil {
 				for _, property := range *asset.Properties {
+					if property.Name == "ciphertrail:evidence-kind" {
+						if property.Value != "" {
+							kinds = append(kinds, property.Value)
+						}
+						continue
+					}
 					if property.Name != "ciphertrail:provenance" {
 						continue
 					}

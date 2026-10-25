@@ -60,6 +60,15 @@ AES.new(secrets.token_bytes(32), AES.MODE_GCM, nonce=b"x" * 12)
 			continue
 		}
 		found[entry.Component.Name] = true
+		if entry.Component.Properties != nil {
+			for _, property := range *entry.Component.Properties {
+				if property.Name == "ciphertrail:key-size-bits" &&
+					entry.Component.CryptoProperties.AlgorithmProperties != nil &&
+					entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+					t.Fatal("a native Python algorithm parameter was duplicated as a property")
+				}
+			}
+		}
 		if entry.Evidence.Kind != "configured" || entry.Evidence.Collector != "python" ||
 			entry.Evidence.Location != "app.py" || entry.Evidence.Line == 0 || entry.Evidence.Symbol == "" {
 			t.Fatalf("missing source evidence: %+v", entry.Evidence)
@@ -82,6 +91,18 @@ AES.new(secrets.token_bytes(32), AES.MODE_GCM, nonce=b"x" * 12)
 	data, err := cyclonedx.Encode([]inventory.Collection{{Collector: "python", Result: result}})
 	if err != nil || strings.Contains(string(data), "PRIVATE_") {
 		t.Fatalf("private values leaked or schema failed: %v", err)
+	}
+}
+
+func TestPythonNonNativeParametersRemainExplicit(t *testing.T) {
+	component := algorithm("AES", cdx.CryptoPrimitiveBlockCipher, "")
+	evidence := inventory.Evidence{Kind: "configured", Collector: "python"}
+	parameter(&component, &evidence, "key-size-bits", value{Kind: "int", Integer: 0}, false)
+	parameter(&component, &evidence, "iv-size-bits", value{Kind: "int", Integer: 128}, false)
+	entry := inventory.Entry{Component: component}
+	if component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" ||
+		property(entry, "key-size-bits") != "0" || property(entry, "iv-size-bits") != "128" {
+		t.Fatal("native-first output discarded parameters without a native mapping")
 	}
 }
 
