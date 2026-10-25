@@ -36,4 +36,14 @@ func TestRunPreservesPartialFailuresAndAccountsForCancelledTargets(t *testing.T)
 		!errors.Is(collections[0].Err, want) || !errors.Is(collections[2].Err, context.Canceled) {
 		t.Fatalf("collection accounting failed: %+v", collections)
 	}
+
+}
+
+func TestPythonSourceIsNotExecutedFromImages(t *testing.T) {
+	request := imageRequest("unused-image", nil, []string{"python"})
+	result, err := request.Collector.Collect(context.Background())
+	if err != nil || len(result.Coverage) != 1 || result.Coverage[0].Analyzer != "python" ||
+		result.Coverage[0].Status != "not-applicable" {
+		t.Fatalf("Python image applicability was not explicit: %+v %v", result.Coverage, err)
+	}
 }

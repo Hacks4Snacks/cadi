@@ -33,6 +33,7 @@ type analyzer struct {
 
 var analyzers = []analyzer{
 	{name: "go"},
+	{name: "python"},
 	{name: "kubernetes", file: func() detect.Detector { return kubernetes.Detector{} }},
 	{name: "artifact", file: func() detect.Detector { return artifact.Detector{} }},
 }

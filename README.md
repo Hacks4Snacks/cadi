@@ -9,9 +9,10 @@ compliance, or remediate findings.
 
 ## Build and run
 
-Requires Go 1.27 or newer. The source analyzer also needs a compatible local
-`go` executable. No Docker daemon, database, hosted scanner, or cluster access
-is needed.
+Building requires Go 1.27 or newer. Go analysis needs a compatible local `go`
+executable. Python analysis needs a trusted Python 3.10+ interpreter available
+as `python3`, only when selected Python source is present. No Python packages,
+Docker daemon, database, hosted scanner, or cluster access are needed.
 
 ```sh
 go mod download
@@ -26,32 +27,35 @@ repository namespace requires updating the module path and internal imports.
 ## Inputs and analyzers
 
 The canonical command is `ciphertrail scan PATH...`. Directories are mixed
-repository roots; files are explicit passive inputs. Go, Kubernetes, and artifact
-analysis run where applicable and contribute to one CBOM. Repositories without
-Go modules do not fail Go discovery: coverage records `not-applicable`.
+repository roots; files are explicit passive inputs. Go, Python, Kubernetes,
+and artifact analysis run where applicable and contribute to one CBOM.
+Repositories without Go modules or Python source record `not-applicable` for
+those analyzers rather than requiring their language tooling.
 
 Use `--analyzers` to restrict passive analysis:
 
 ```sh
 ./bin/ciphertrail scan . --output cbom.json
 ./bin/ciphertrail scan . --analyzers go,kubernetes --output cbom.json
+./bin/ciphertrail scan . --analyzers python --output python.cbom.json
 ./bin/ciphertrail scan ./rendered.yaml --analyzers kubernetes --offline
 ```
 
-The available analyzer names are `go`, `kubernetes`, and `artifact`. Omitting
-`--analyzers` selects all three; an empty or unknown selection is an error.
+The available analyzer names are `go`, `python`, `kubernetes`, and `artifact`.
+Omitting `--analyzers` selects all four; an empty or unknown selection is an error.
 Images and TLS/SSH targets remain explicit options, not inferred from references
 found in a repository. Go analysis needs a directory with a `go.mod` at or below
 that root; it does not treat an isolated `.go` file as a complete project.
 
-| Input                | Evidence collected                                           | Important boundary                                        |
-|----------------------|--------------------------------------------------------------|-----------------------------------------------------------|
-| Go source            | Resolved crypto API calls, parameters, modules, dependencies | Configuration evidence, not proof of execution            |
-| Local files          | Public material, Go binary metadata, supported configuration | No private-key values; no target program execution        |
-| Local image          | Effective filesystem using the same file detectors           | Single-image Docker save TARs and OCI layout directories  |
-| Kubernetes manifests | Certificate declarations, TLS Secret material, Ingress TLS   | Local YAML/JSON only; no Helm execution or cluster access |
-| TLS target           | Negotiated version/cipher, peer certificate chain, ALPN      | One handshake, not exhaustive capability enumeration      |
-| SSH target           | Public host key, key format, size/curve, fingerprint         | Stops before user authentication; no commands or login    |
+| Input                  | Evidence collected                                             | Important boundary                                          |
+|------------------------|----------------------------------------------------------------|-------------------------------------------------------------|
+| Go source              | Resolved crypto API calls, parameters, modules, dependencies   | Configuration evidence, not proof of execution              |
+| Python source          | Import-qualified crypto calls and bounded parameter facts      | Static AST analysis; no target imports or execution         |
+| Local files            | Public material, Go binary metadata, supported configuration   | No private-key values; no target program execution          |
+| Local image            | Effective filesystem using the same file detectors             | Single-image Docker save TARs and OCI layout directories    |
+| Kubernetes manifests   | Certificate declarations, TLS Secret material, Ingress TLS     | Local YAML/JSON only; no Helm execution or cluster access   |
+| TLS target             | Negotiated version/cipher, peer certificate chain, ALPN        | One handshake, not exhaustive capability enumeration        |
+| SSH target             | Public host key, key format, size/curve, fingerprint           | Stops before user authentication; no commands or login      |
 
 Inputs can be repeated and combined in one report:
 
@@ -271,10 +275,18 @@ dependency, and fixture directories: `vendor`, `node_modules`, `testdata`, `test
 name. Recognized CBOM/SBOM files and the requested output file are excluded so
 generated inventories are not recursively scanned.
 
+Child directories marked by `pyvenv.cfg` are omitted as Python virtual
+environments, without reading their configuration or dependencies. An ordinary
+directory named `env` is not excluded just because of its name.
+
 Go also excludes `_test.go` files through its build context. A normal file such
 as `internal/testutil/crypto.go` is still
 ordinary Go source; CipherTrail does not guess that it is test-only from its
 directory name.
+
+Python omits `test_*.py`, `*_test.py`, and `conftest.py` during automatic source
+analysis. An explicitly supplied `.py` file can select a test module, subject to
+the same hard exclusions as other inputs.
 
 Add literal root-relative file or directory paths to `.ciphertrailignore` at
 each selected directory root. These rules apply to every passive analyzer:
@@ -403,6 +415,82 @@ Loading packages can invoke the local Go compiler and native build tools to
 obtain export information, but does not run tests, `go generate`, or the target
 application. The analysis phase disables module network lookups and uses
 `-mod=readonly`; source is not uploaded as a fallback.
+
+## Python analysis
+
+Python source is discovered alongside other repository content; no `pyproject.toml`
+or installed project environment is required. Individual `.py` files are also
+valid source inputs, including files with no recognized cryptography:
+
+```sh
+./bin/ciphertrail scan ./service ./rendered.yaml --output service.cbom.json
+./bin/ciphertrail scan ./service --analyzers python --output python.cbom.json
+./bin/ciphertrail scan ./service/crypto.py --analyzers python
+```
+
+The Go collector runs an embedded, trusted AST frontend with
+`python3 -I -S -B`. Source bytes are input data: project modules, startup hooks,
+annotations, and statements are never imported or executed. No `pip` operation
+or dependency download is performed. An interpreter resolving inside the scanned
+source tree is rejected; use a trusted interpreter outside that tree on `PATH`.
+Python analysis never uses an interpreter from an image.
+
+### Initial API coverage
+
+- Standard library: common `hashlib` hashes, named hash selection, PBKDF2/scrypt,
+  HMAC, `secrets`, and `os.urandom`.
+- `ssl`: context creation, wrapping APIs, declared TLS minima/maxima, verification
+  settings, OpenSSL cipher selectors, and certificate/key/CA file references.
+  These are configured settings, not negotiated versions or cipher suites.
+- `cryptography`: common hash/HMAC APIs; RSA, EC, Ed25519/Ed448, and X25519/X448
+  key generation; supported signature operations; AES and common block modes,
+  AEAD and Fernet; PBKDF2/HKDF/scrypt; X.509 imports and certificate/CSR builder
+  signing; and private/public key imports.
+- `Crypto` and `Cryptodome`: common hash/HMAC constructors, AES configuration
+  and encryption/decryption entry points, RSA/ECC generation, and random bytes.
+
+Coverage is an explicit API model set, not complete coverage of those libraries.
+Resolved but unmodeled crypto APIs produce file/line diagnostics. Known metadata
+and lifecycle calls are classified by exact symbol rather than broad method-name
+suppression. Algorithms are not inferred from arbitrary function names.
+
+### Resolution, evidence, and limits
+
+Direct, `from`, and aliased imports are resolved with lexical binding checks.
+Parameters, rebinding, wildcard imports, local provider-named modules, and
+observed namespace or instance attribute mutations prevent unsupported
+attribution. Provider shadow files are checked by filesystem metadata even when
+their contents are excluded. Mutation facts from selected files also invalidate
+nested parameter expressions, not just the outer API call.
+
+Literal integer expressions, immutable byte lengths, simple aliases, and selected
+constructor results can establish public parameters. These describe visible
+source configuration, not a runtime guarantee. Opaque calls, mutable byte arrays,
+dynamic lookup, arbitrary side effects, and cross-module value/wrapper tracing
+remain outside this bounded analysis. Unresolved parameters stay in provenance;
+unknown-value placeholder properties are not emitted.
+
+Every finding retains its Python source location, line, and resolved API symbol.
+Provider links identify import namespaces, not installed distributions or
+versions: in particular, `Crypto` does not uniquely identify PyCryptodome.
+The frontend interpreter version is collection metadata, not the target runtime
+version. Python dependency manifests and lockfiles are not an installed-package
+inventory.
+
+Keys, messages, passwords, inline certificate contents, and other raw argument
+values are not exported or used to form private-derived identifiers. Only modeled
+public fields and lengths are retained. Referenced certificate/key paths are
+not opened, and certificate signing declarations are not issued certificates.
+
+Parsing is bounded to 8 MiB per source file, 100,000 AST nodes, 32 expression
+levels, 200,000 resolved value visits, 64 arguments per call, and a 16 MiB frontend
+response. Each file has a 10-second frontend deadline and supports cancellation.
+Syntax, source-encoding, interpreter, and resource-limit errors are operational
+failures: successful files remain in the partial CBOM with failed coverage.
+The host interpreter must understand the selected source syntax; Python 3.10 is
+the frontend minimum, not a promise that it parses every newer Python release.
+Stubs, notebooks, bytecode, Python embedded in YAML or shell, and source analysis
+inside images are not included.
 
 ## Runtime interrogation
 
@@ -747,6 +835,8 @@ separate boundaries:
   configuration detection; no Kubernetes client or Helm runtime.
 - [`internal/goscan`](internal/goscan): project-wide Go loading, SSA, and value
   analysis, kept separate from single-file detectors.
+- [`internal/pyscan`](internal/pyscan): isolated Python AST facts, import/binding
+  resolution, Go-owned crypto models, and source coverage.
 - [`internal/material`](internal/material): shared public certificate/key
   metadata parsing, reused by file, manifest, image, and runtime collection.
 - [`internal/probe`](internal/probe): explicitly authorized TLS/SSH interrogation.
@@ -772,10 +862,11 @@ To add a file detection type:
    partial failures, secret sentinels, and validated graph relationships.
 
 Project analyzers and active probes implement `inventory.Collector` directly.
-A future Python analyzer can retain project/import context without pretending
-each source file is independent. Live Kubernetes acquisition would be an
-explicit new capability, not an implicit side effect of manifest scanning.
-Neither Python analysis nor live Kubernetes access is implemented.
+Python analysis consumes the shared source selection and retains import/mutation
+context without being an image file detector. New language analyzers can use the
+same collector and evidence contracts. Live Kubernetes acquisition is not
+implemented and would be an explicit new capability, not an implicit side effect
+of manifest scanning.
 
 The result contract retains typed CycloneDX components. New configuration
 detectors use inventory constructors rather than manipulating export schemas;

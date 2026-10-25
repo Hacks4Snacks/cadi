@@ -12,6 +12,7 @@ import (
 	"ciphertrail/internal/goscan"
 	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
+	"ciphertrail/internal/pyscan"
 	"ciphertrail/internal/scope"
 )
 
@@ -156,11 +157,26 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 				metadata.Coverage = append(metadata.Coverage, inventory.Coverage{Analyzer: "go", Status: status, Reason: reason})
 			}
 		}
+		fileSelection := selection
+		if slices.Contains(selected, "python") {
+			if item.duplicates > 0 && len(selection.Files) == 0 {
+				metadata.Coverage = append(metadata.Coverage, inventory.Coverage{Analyzer: "python", Status: "deduplicated", Reason: "covered by another input"})
+			} else {
+				collectors = append(collectors, pyscan.Source{Selection: selection})
+			}
+			fileSelection.Files = slices.Clone(selection.Files)
+			for index, file := range fileSelection.Files {
+				if file.Explicit && strings.HasSuffix(file.Path, ".py") {
+					// Source ownership does not require an unrelated artifact match.
+					fileSelection.Files[index].Explicit = false
+				}
+			}
+		}
 		detectors, fallback := fileDetectors(selected)
 		if len(detectors) > 0 {
 			if len(selection.Files) > 0 {
 				collectors = append(collectors, detect.Collector{
-					Source: input.Local{Selection: &selection}, Detectors: detectors, Fallback: fallback,
+					Source: input.Local{Selection: &fileSelection}, Detectors: detectors, Fallback: fallback,
 				})
 			} else {
 				for _, detector := range detectors {
@@ -210,6 +226,9 @@ func (c composed) Collect(ctx context.Context) (inventory.Result, error) {
 
 func imageRequest(path string, detectors []detect.Detector, selected []string) Request {
 	var metadata inventory.Result
+	if slices.Contains(selected, "python") {
+		metadata.Coverage = append(metadata.Coverage, inventory.Coverage{Analyzer: "python", Status: "not-applicable", Reason: "Python source analysis requires local source paths; image interpreters are never executed"})
+	}
 	if slices.Contains(selected, "go") {
 		metadata.Coverage = append(metadata.Coverage, inventory.Coverage{Analyzer: "go", Status: "not-applicable", Reason: "Go source analysis requires a directory; binaries use artifact analysis"})
 	}

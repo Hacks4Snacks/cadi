@@ -95,6 +95,17 @@ func Discover(ctx context.Context, target string, options Options) (Selection, e
 				omit(path, "default-directory")
 				return filepath.SkipDir
 			}
+			if path != absolute {
+				marker, err := os.Lstat(filepath.Join(path, "pyvenv.cfg"))
+				if err == nil && !marker.IsDir() {
+					omit(path, "python-virtual-environment")
+					return filepath.SkipDir
+				}
+				if err != nil && !os.IsNotExist(err) {
+					failures = errors.Join(failures, fmt.Errorf("inspect Python virtual environment boundary: %w", err))
+					return filepath.SkipDir
+				}
+			}
 			if path != absolute && !options.IncludeNestedRepos {
 				_, err := os.Lstat(filepath.Join(path, ".git"))
 				if err == nil {

@@ -32,7 +32,7 @@ PATH inputs:
   Flags may appear before or after paths. Use -- before a path beginning with -.
 
 Analysis:
-  --analyzers go,kubernetes,artifact
+  --analyzers go,python,kubernetes,artifact
                     Select passive analyzers (default: all supported analyzers)
   --exclude PATH    Exclude a literal root-relative file/directory for all analyzers
   --include-nested-repos
@@ -63,6 +63,7 @@ Repository scope reads .ciphertrailignore and excludes generated output, known
 test/dependency directories, and nested Git repositories by default. Explicit
 file inputs can select material inside default-excluded directories.
 Helm templates require separately rendered YAML/JSON; charts are not executed.
+Python source analysis requires a trusted Python 3.10+ interpreter on PATH.
 No network discovery, source uploads, policy verdicts, or target execution.
 `
 
@@ -90,7 +91,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := pflag.NewFlagSet("scan", pflag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { fmt.Fprint(stdout, usage) }
-	flags.StringSliceVar(&options.Analyzers, "analyzers", nil, "passive analyzers: go,kubernetes,artifact")
+	flags.StringSliceVar(&options.Analyzers, "analyzers", nil, "passive analyzers: "+strings.Join(scan.AnalyzerNames(), ","))
 	flags.StringArrayVar(&options.Exclude, "exclude", nil, "literal root-relative exclusion")
 	flags.StringArrayVar(&options.Images, "image", nil, "Docker archive or OCI layout directory")
 	flags.StringArrayVar(&options.TLS, "tls", nil, "explicit TLS host:port")
