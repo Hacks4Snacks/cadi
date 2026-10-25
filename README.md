@@ -79,6 +79,20 @@ Without `--output`, JSON goes to stdout. Coverage summaries, grouped diagnostics
 and operational errors go to stderr. Overlapping paths are normalized and shared
 file/module work is deduplicated without merging distinct evidence contexts.
 
+For a human-readable crypto-focused view alongside the complete JSON report:
+
+```sh
+./bin/ciphertrail scan . --summary --output cbom.json
+```
+
+`--summary` adds a table on stderr with one row per cryptographic asset, its
+evidence kind and source locations, and directly linked API/library names.
+Supporting libraries and applications are not additional finding rows or part of
+the crypto count. The table remains crypto-focused with `--include-dependencies`;
+that option still controls the JSON inventory. Partial collections are labeled
+`INCOMPLETE`, and an empty summary does not establish absence of cryptography.
+Control characters in table cells are escaped.
+
 ## Crypto-focused output
 
 By default, the report contains:
@@ -98,6 +112,15 @@ For Go source findings, CipherTrail links the crypto use to the resolved module
 providing the called API, or to the versioned Go standard library. This is
 source-level implementation context, not proof of runtime execution. Runtime
 probes do not infer the remote server's implementation library.
+
+Python provider libraries use concise labels such as `requests`, retaining their
+source-import/API qualification in `ciphertrail:scope`. No installed distribution,
+version, or TLS backend is inferred from that label. The protocol/algorithm and
+the supporting library remain separate components connected by `dependsOn`;
+both can legitimately cite the same call site. In the optional summary, that
+appears as one crypto finding with `requests` in the API/library column, not as
+two crypto findings. API/library context is not necessarily the cryptographic
+implementation.
 
 To include the full collected software/dependency inventory instead:
 
@@ -448,11 +471,54 @@ Python analysis never uses an interpreter from an image.
   signing; and private/public key imports.
 - `Crypto` and `Cryptodome`: common hash/HMAC constructors, AES configuration
   and encryption/decryption entry points, RSA/ECC generation, and random bytes.
+- HTTP clients: selected Requests, HTTPX, urllib3, and standard-library request
+  APIs with an established HTTPS scheme.
 
 Coverage is an explicit API model set, not complete coverage of those libraries.
 Resolved but unmodeled crypto APIs produce file/line diagnostics. Known metadata
 and lifecycle calls are classified by exact symbol rather than broad method-name
 suppression. Algorithms are not inferred from arbitrary function names.
+
+### HTTP clients and URL schemes
+
+HTTPS intent is collected from:
+
+- Requests verb helpers and `request`, including imported aliases and known
+  `Session` instances.
+- HTTPX verb helpers, `request`, and `stream`, including `Client` and
+  `AsyncClient`. Known synchronous/asynchronous context-manager bindings are
+  supported.
+- urllib3 `request`, pool/proxy manager request methods, and explicit
+  HTTPS connection-pool construction/use.
+- `urllib.request.urlopen`, `Request` URL wrappers, opener `open` calls, and
+  `http.client.HTTPSConnection` construction/use.
+
+The resolver retains only a bounded string prefix for scheme analysis. Literal
+URLs, fixed f-string prefixes, and concatenations of known string forms can
+establish HTTPS. For example, `f"https://example.invalid/{resource_id}"` has an
+established scheme without resolving or exporting the interpolation. An opaque
+operand in string concatenation is not assumed to be a string.
+
+Relative HTTPX request URLs can inherit a known constructor `base_url`; an
+opaque request URL cannot, because it might override the base with an absolute
+URL. Observed URL/base mutations, provider shadowing, method/constructor
+replacement, and opaque context-manager results prevent unsupported inference.
+Known `httpx.URL` and `urllib.request.Request` wrappers are inspected as source
+expressions only.
+
+An established HTTPS operation produces a **configured** TLS asset with source
+evidence and an import-namespace provider link. Plain HTTP produces no TLS
+asset. Opaque, relative-without-known-base, or unsupported URL schemes produce a
+file/line diagnostic instead of a guessed protocol. Prepared-request `send`
+calls are currently reported as unresolved. Byte URLs, `%` formatting,
+`str.format`, and dynamic leading f-string fields remain unresolved.
+
+These findings describe initial HTTPS intent, not runtime transport behavior.
+Redirects, proxies, custom transports, negotiated TLS versions/ciphers, peer
+certificates, and verification defaults are not inferred. URLs, hosts, paths,
+query parameters, headers, cookies, authentication values, bodies, and
+HTTP-client certificate arguments are not exported or used in asset identity.
+No requests are made and no client libraries are imported or installed.
 
 ### Resolution, evidence, and limits
 

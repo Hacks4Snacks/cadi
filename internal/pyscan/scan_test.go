@@ -115,6 +115,64 @@ func quote(value string) string {
 	return string(data)
 }
 
+func TestPythonProviderNamesRemainQualifiedAndShared(t *testing.T) {
+	selection := fixture(t, map[string]string{"app.py": `
+import requests
+requests.get("https://example.invalid/first")
+requests.post("https://example.invalid/second")
+`})
+	result, err := (Source{Selection: selection}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	providerRef := ""
+	assets := map[string]bool{}
+	libraries := 0
+	for _, component := range *bom.Components {
+		if component.Type == cdx.ComponentTypeCryptographicAsset {
+			assets[component.BOMRef] = true
+		}
+		if component.Type != cdx.ComponentTypeLibrary {
+			continue
+		}
+		libraries++
+		if component.Name != "requests" || component.Version != "" {
+			t.Fatalf("provider label is not concise or invents a version: %+v", component)
+		}
+		providerRef = component.BOMRef
+		qualified := false
+		for _, property := range *component.Properties {
+			qualified = qualified || property.Name == "ciphertrail:scope" &&
+				strings.Contains(property.Value, "source import/API namespace") &&
+				strings.Contains(property.Value, "not established")
+		}
+		if !qualified {
+			t.Fatal("renaming lost the provider's source-only qualification")
+		}
+	}
+	links := 0
+	for _, dependency := range *bom.Dependencies {
+		if assets[dependency.Ref] && dependency.Dependencies != nil {
+			for _, ref := range *dependency.Dependencies {
+				if ref == providerRef {
+					links++
+				}
+			}
+		}
+	}
+	if libraries != 1 || len(assets) != 2 || links != 2 {
+		t.Fatalf("provider graph changed: libraries=%d assets=%d links=%d", libraries, len(assets), links)
+	}
+}
+
 func TestPythonShadowingAndUnknownValues(t *testing.T) {
 	selection := fixture(t, map[string]string{"app.py": `
 import hashlib

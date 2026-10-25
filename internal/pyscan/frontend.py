@@ -11,6 +11,7 @@ MAX_SOURCE = 8 << 20
 MAX_NODES = 100000
 MAX_VALUES = 200000
 MAX_DEPTH = 32
+MAX_PREFIX = 64
 UNKNOWN = {"kind": "unknown"}
 
 
@@ -37,6 +38,12 @@ def lexical_parent(scope: Scope) -> Scope:
     return scope
 
 
+def string_value(text: str) -> dict[str, Any]:
+    if len(text) <= 512:
+        return {"kind": "string", "text": text, "length": len(text)}
+    return {"kind": "string", "prefix": text[:MAX_PREFIX], "length": len(text)}
+
+
 class Index(ast.NodeVisitor):
     def __init__(self) -> None:
         self.root = Scope(None, "module")
@@ -47,6 +54,7 @@ class Index(ast.NodeVisitor):
         self.writes: list[tuple[ast.Attribute, Scope]] = []
         self.mutations: set[str] = set()
         self.attribute_writes: set[tuple[int, str, str]] = set()
+        self.modified: dict[tuple[int, str], list[str]] = {}
         self.issues: list[dict[str, Any]] = []
         self.nodes = 0
         self.values = 0
@@ -130,6 +138,21 @@ class Index(ast.NodeVisitor):
     def visit_Delete(self, node: ast.Delete) -> None:
         for target in node.targets:
             self.target(target, None)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        method = "__aenter__" if isinstance(node, ast.AsyncWith) else "__enter__"
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                access = ast.Attribute(value=item.context_expr, attr=method, ctx=ast.Load())
+                entry = ast.Call(func=access, args=[], keywords=[])
+                ast.copy_location(access, item.context_expr)
+                ast.copy_location(entry, item.context_expr)
+                self.target(item.optional_vars, entry)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
 
     def function(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
         previous = self.scope
@@ -274,6 +297,10 @@ class Index(ast.NodeVisitor):
             origin = self.origin(target.value, scope)
             if origin is not None:
                 self.attribute_writes.add((*origin, target.attr))
+        for scope_id, name, attribute in self.attribute_writes:
+            self.modified.setdefault((scope_id, name), []).append(attribute)
+        for attributes in self.modified.values():
+            attributes.sort()
         self.values = 0
 
     def resolve(self, node: ast.expr | None, scope: Scope, seen: set[tuple[int, str]], depth: int = 0, mutations: bool = True) -> dict[str, Any]:
@@ -300,7 +327,12 @@ class Index(ast.NodeVisitor):
                 return {"kind": value["kind"], "text": value["text"]}
             if owner is scope and getattr(value, "lineno", 0) > node.lineno:
                 return UNKNOWN
-            return self.resolve(value, owner, seen | {key}, depth + 1, mutations)
+            resolved = self.resolve(value, owner, seen | {key}, depth + 1, mutations)
+            origin = self.origin(node, scope) if mutations else None
+            attributes = self.modified.get(origin, []) if origin is not None else []
+            if attributes:
+                resolved = dict(resolved, modified=sorted(set(resolved.get("modified", [])) | set(attributes)))
+            return resolved
         if isinstance(node, ast.Attribute):
             base = self.resolve(node.value, scope, seen, depth + 1, mutations)
             origin = self.origin(node.value, scope)
@@ -319,10 +351,15 @@ class Index(ast.NodeVisitor):
             if isinstance(node.value, int) and node.value.bit_length() <= 63:
                 return {"kind": "int", "integer": node.value}
             if isinstance(node.value, str):
-                if len(node.value) <= 512:
-                    return {"kind": "string", "text": node.value, "length": len(node.value)}
-                return {"kind": "string", "length": len(node.value)}
+                return string_value(node.value)
             return UNKNOWN
+        if isinstance(node, ast.JoinedStr):
+            prefix = ""
+            for part in node.values:
+                if not isinstance(part, ast.Constant) or not isinstance(part.value, str):
+                    return {"kind": "string-prefix", "text": prefix[:MAX_PREFIX]}
+                prefix += part.value
+            return string_value(prefix)
         if isinstance(node, ast.Call):
             if len(node.args) + len(node.keywords) > 64:
                 self.limited = True

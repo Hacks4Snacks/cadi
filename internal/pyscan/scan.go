@@ -122,6 +122,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		Name: filepath.Base(s.Selection.Root) + " (Python source)", BOMRef: inventory.Ref("python-source", s.Selection.Root)},
 		inventory.Evidence{Kind: "present", Collector: "python", Location: s.Selection.Root}, "")
 	providers := map[string]string{}
+	httpContext := false
 	for _, document := range documents {
 		shadowed, err := localProviders(s.Selection.Root, document.file.Path)
 		if err != nil {
@@ -144,13 +145,14 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 						hint = instance(call.Value.Base.Base)
 					}
 				}
-				if cryptoNamespace(hint) {
+				if cryptoNamespace(hint) || httpNamespace(hint) {
 					result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: document.file.Location,
 						Line: call.Line, Message: "Python cryptographic callable binding is ambiguous or shadowed: " + hint})
 				}
 				continue
 			}
-			if !cryptoNamespace(name) {
+			http, isHTTP := httpCallModel(name)
+			if !cryptoNamespace(name) && !isHTTP {
 				continue
 			}
 			if shadowed[strings.Split(name, ".")[0]] || mutated(name, mutations) {
@@ -162,12 +164,33 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 				continue
 			}
 			evidence := inventory.Evidence{Kind: "configured", Collector: "python", Location: document.file.Location, Line: call.Line, Symbol: name}
-			component, matched := recognize(name, call.Value, &evidence)
-			if !matched {
-				result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{
-					Location: evidence.Location, Line: evidence.Line, Message: "Python cryptographic API not modeled: " + name,
-				})
-				continue
+			var component cdx.Component
+			if isHTTP {
+				if !httpContext {
+					result.Metadata("python-http-scope", "configured HTTPS request intent only; redirects, proxies, custom transports, negotiated TLS settings, peer certificates, and verification defaults are not established; request data is not exported")
+					httpContext = true
+				}
+				switch http.scheme(call.Value) {
+				case schemeHTTPS:
+					component = httpsConfiguration()
+				case schemeHTTP:
+					continue
+				default:
+					result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{
+						Location: evidence.Location, Line: evidence.Line,
+						Message: "Python HTTP URL scheme is not established as HTTP/HTTPS; TLS use was not inferred: " + name,
+					})
+					continue
+				}
+			} else {
+				var matched bool
+				component, matched = recognize(name, call.Value, &evidence)
+				if !matched {
+					result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{
+						Location: evidence.Location, Line: evidence.Line, Message: "Python cryptographic API not modeled: " + name,
+					})
+					continue
+				}
 			}
 			ref := result.Add(component, evidence, parent)
 			result.DependOn(ref, provider(&result, providers, s.Selection.Root, name, evidence))
@@ -203,7 +226,7 @@ func readSource(ctx context.Context, file scope.File) ([]byte, error) {
 
 func localProviders(root, filename string) (map[string]bool, error) {
 	blocked := map[string]bool{}
-	for _, name := range []string{"hashlib", "hmac", "ssl", "secrets", "os", "cryptography", "Crypto", "Cryptodome", "OpenSSL", "jwt", "paramiko"} {
+	for _, name := range []string{"hashlib", "hmac", "ssl", "secrets", "os", "cryptography", "Crypto", "Cryptodome", "OpenSSL", "jwt", "paramiko", "requests", "httpx", "urllib3", "urllib", "http"} {
 		for _, directory := range []string{root, filepath.Join(root, "src"), filepath.Dir(filename)} {
 			for _, path := range []string{filepath.Join(directory, name+".py"), filepath.Join(directory, name)} {
 				_, err := os.Lstat(path)
@@ -219,7 +242,10 @@ func localProviders(root, filename string) (map[string]bool, error) {
 }
 
 func mutated(symbol string, mutations []string) bool {
+	symbol = canonicalHTTPName(symbol)
 	for _, mutation := range mutations {
+		mutation = canonicalHTTPName(mutation)
+		mutation = strings.TrimSuffix(strings.TrimSuffix(mutation, ".__new__"), ".__init__")
 		if symbol == mutation || strings.HasPrefix(symbol, mutation+".") {
 			return true
 		}
@@ -229,9 +255,9 @@ func mutated(symbol string, mutations []string) bool {
 
 func provider(result *inventory.Result, refs map[string]string, root, symbol string, evidence inventory.Evidence) string {
 	namespace := strings.Split(symbol, ".")[0]
-	name := "Python import namespace: " + namespace
+	name := namespace
 	switch namespace {
-	case "hashlib", "hmac", "ssl", "secrets", "os":
+	case "hashlib", "hmac", "ssl", "secrets", "os", "urllib", "http":
 		name = "Python standard library"
 	}
 	if refs[name] == "" {

@@ -3,16 +3,21 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/scan"
 
+	cdx "github.com/CycloneDX/cyclonedx-go"
 	"github.com/spf13/pflag"
 )
 
@@ -48,6 +53,7 @@ Additional explicit inputs:
 
 Output:
   --output PATH     CycloneDX 1.7 JSON (default: stdout)
+  --summary         Show crypto findings with API/library context on stderr
   --include-dependencies
                     Include all collected software; default is crypto-focused
 
@@ -88,6 +94,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var options scan.Options
 	var output string
 	var includeDependencies bool
+	var summary bool
 	flags := pflag.NewFlagSet("scan", pflag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { fmt.Fprint(stdout, usage) }
@@ -98,6 +105,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringArrayVar(&options.SSH, "ssh", nil, "explicit SSH host:port")
 	flags.StringVar(&output, "output", "-", "output file or - for stdout")
 	flags.BoolVar(&includeDependencies, "include-dependencies", false, "include the full collected dependency inventory")
+	flags.BoolVar(&summary, "summary", false, "show a crypto-focused findings table on stderr")
 	flags.StringVar(&options.GOOS, "goos", "", "target GOOS")
 	flags.StringVar(&options.GOARCH, "goarch", "", "target GOARCH")
 	flags.StringVar(&options.Tags, "tags", "", "Go build tags")
@@ -159,10 +167,126 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return 1
 	}
+	if summary {
+		if err := writeSummary(stderr, data, failed); err != nil {
+			fmt.Fprintln(stderr, "ERROR: write findings summary:", err)
+			return 1
+		}
+	}
 	if failed {
 		return 1
 	}
 	return 0
+}
+
+func writeSummary(writer io.Writer, data []byte, incomplete bool) error {
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		return fmt.Errorf("decode validated CBOM: %w", err)
+	}
+	components := map[string]cdx.Component{}
+	var assets []cdx.Component
+	if bom.Components != nil {
+		for _, component := range *bom.Components {
+			components[component.BOMRef] = component
+			if component.Type == cdx.ComponentTypeCryptographicAsset {
+				assets = append(assets, component)
+			}
+		}
+	}
+	providers := map[string][]string{}
+	if bom.Dependencies != nil {
+		for _, dependency := range *bom.Dependencies {
+			if dependency.Dependencies == nil {
+				continue
+			}
+			for _, ref := range *dependency.Dependencies {
+				component, exists := components[ref]
+				if !exists {
+					return fmt.Errorf("summary dependency %q is missing", ref)
+				}
+				if component.Type == cdx.ComponentTypeLibrary {
+					providers[dependency.Ref] = append(providers[dependency.Ref], component.Name)
+				}
+			}
+		}
+	}
+	slices.SortFunc(assets, func(a, b cdx.Component) int {
+		if order := strings.Compare(a.Name, b.Name); order != 0 {
+			return order
+		}
+		return strings.Compare(a.BOMRef, b.BOMRef)
+	})
+	var output strings.Builder
+	fmt.Fprintf(&output, "\nCryptographic findings: %d", len(assets))
+	if incomplete {
+		output.WriteString(" (INCOMPLETE)")
+	}
+	output.WriteByte('\n')
+	if len(assets) == 0 {
+		output.WriteString("None collected; see coverage and diagnostics. This does not establish absence of cryptography.\n")
+	} else {
+		table := tabwriter.NewWriter(&output, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(table, "ASSET\tKIND\tEVIDENCE\tSOURCE\tAPI / LIBRARY")
+		for _, asset := range assets {
+			var kinds, locations []string
+			if asset.Properties != nil {
+				for _, property := range *asset.Properties {
+					if property.Name != "ciphertrail:provenance" {
+						continue
+					}
+					var evidence struct{ Kind string }
+					if err := json.Unmarshal([]byte(property.Value), &evidence); err != nil {
+						return fmt.Errorf("decode summary evidence for %q: %w", asset.Name, err)
+					}
+					if evidence.Kind != "" {
+						kinds = append(kinds, evidence.Kind)
+					}
+				}
+			}
+			if asset.Evidence != nil && asset.Evidence.Occurrences != nil {
+				for _, occurrence := range *asset.Evidence.Occurrences {
+					location := occurrence.Location
+					if occurrence.Line != nil && *occurrence.Line > 0 {
+						location += ":" + strconv.Itoa(*occurrence.Line)
+					}
+					if location != "" {
+						locations = append(locations, location)
+					}
+				}
+			}
+			kind := "unspecified"
+			if asset.CryptoProperties != nil && asset.CryptoProperties.AssetType != "" {
+				kind = string(asset.CryptoProperties.AssetType)
+			}
+			fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\n",
+				summaryCell(asset.Name), summaryCell(kind), summaryCell(summaryValues(kinds)),
+				summaryCell(summaryValues(locations)), summaryCell(summaryValues(providers[asset.BOMRef])))
+		}
+		if err := table.Flush(); err != nil {
+			return fmt.Errorf("format findings summary: %w", err)
+		}
+	}
+	text := output.String()
+	n, err := io.WriteString(writer, text)
+	if err == nil && n != len(text) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
+func summaryValues(values []string) string {
+	slices.Sort(values)
+	values = slices.Compact(values)
+	if len(values) == 0 {
+		return "-"
+	}
+	return strings.Join(values, "; ")
+}
+
+func summaryCell(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
 }
 
 func writeCoverage(writer io.Writer, collection inventory.Collection) {

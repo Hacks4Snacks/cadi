@@ -24,6 +24,8 @@ const frontendTimeout = 10 * time.Second
 type value struct {
 	Kind     string           `json:"kind"`
 	Text     string           `json:"text"`
+	Prefix   string           `json:"prefix"`
+	Modified []string         `json:"modified"`
 	Hint     string           `json:"hint"`
 	Integer  int64            `json:"integer"`
 	Length   int64            `json:"length"`

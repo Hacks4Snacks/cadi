@@ -49,6 +49,9 @@ func instance(v *value) string {
 		return ""
 	}
 	name := symbol(v.Base)
+	if class := httpInstance(*v); class != "" {
+		return class
+	}
 	switch name {
 	case "ssl.SSLContext", "ssl.create_default_context", "ssl._create_unverified_context":
 		return "ssl.SSLContext"
