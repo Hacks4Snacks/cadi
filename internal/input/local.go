@@ -4,84 +4,60 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 
 	"ciphertrail/internal/inventory"
+	"ciphertrail/internal/scope"
 )
 
-// Local visits an explicit file or a directory without following symbolic links.
-type Local struct{ Path string }
-
-// Walk opens regular files only for the duration of each visitor call.
-func (s Local) Walk(ctx context.Context, visit func(*File) error) (inventory.Result, error) {
-	var result inventory.Result
-	if err := ctx.Err(); err != nil {
-		return result, err
-	}
-	root, err := filepath.Abs(s.Path)
-	if err != nil {
-		return result, err
-	}
-	info, err := os.Lstat(root)
-	if err != nil {
-		return result, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return result, fmt.Errorf("explicit artifact input is a symlink; supply its intended target directly")
-	}
-	if !info.IsDir() {
-		return result, visitLocal(ctx, root, root, true, visit)
-	}
-	var failures error
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			failures = errors.Join(failures, err)
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if entry.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		location, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		location = filepath.ToSlash(location)
-		if entry.Type()&os.ModeSymlink != 0 {
-			result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: location, Message: "symlink not followed"})
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: location, Message: "non-regular file not read"})
-			return nil
-		}
-		if err := visitLocal(ctx, path, location, false, visit); err != nil {
-			failures = errors.Join(failures, fmt.Errorf("%s: %w", location, err))
-		}
-		return nil
-	})
-	return result, errors.Join(failures, err)
+// Local opens selected local files without following symbolic links.
+type Local struct {
+	Path      string
+	Selection *scope.Selection
 }
 
-func visitLocal(ctx context.Context, path, location string, explicit bool, visit func(*File) error) error {
+// Walk uses a supplied discovery snapshot or discovers the explicit target once.
+func (s Local) Walk(ctx context.Context, visit func(*File) error) (inventory.Result, error) {
+	var result inventory.Result
+	selection := s.Selection
+	var failures error
+	if selection == nil {
+		discovered, err := scope.Discover(ctx, s.Path, scope.Options{ClassifyHelm: true, SkipReports: true})
+		selection, failures = &discovered, err
+	}
+	for _, omission := range selection.Omissions {
+		if omission.Reason == "link-or-special-file" {
+			result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: omission.Path, Message: "link or special file not followed"})
+		}
+	}
+	for _, selected := range selection.Files {
+		if err := ctx.Err(); err != nil {
+			return result, errors.Join(failures, err)
+		}
+		if err := visitLocal(ctx, selected, visit); err != nil {
+			failures = errors.Join(failures, fmt.Errorf("%s: %w", selected.Location, err))
+		}
+	}
+	return result, errors.Join(failures, ctx.Err())
+}
+
+func visitLocal(ctx context.Context, selected scope.File, visit func(*File) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	before, err := os.Lstat(path)
+	before, err := os.Lstat(selected.Path)
 	if err != nil {
 		return err
 	}
 	if !before.Mode().IsRegular() {
 		return fmt.Errorf("artifact is not a regular file")
 	}
-	reader, err := os.Open(path)
+	relative, err := filepath.Rel(selected.Root, selected.Path)
+	if err != nil {
+		return err
+	}
+	reader, err := os.OpenInRoot(selected.Root, relative)
 	if err != nil {
 		return err
 	}
@@ -93,8 +69,8 @@ func visitLocal(ctx context.Context, path, location string, explicit bool, visit
 	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
 		return fmt.Errorf("input changed while opening it")
 	}
-	file := NewFile(location, after.Size(), reader)
-	file.Explicit, file.RandomAccess = explicit, reader
-	file.Evidence = inventory.Evidence{Kind: "present", Collector: "file", Location: location}
+	file := NewFile(selected.Location, after.Size(), reader)
+	file.Explicit, file.RandomAccess, file.HelmTemplate = selected.Explicit, reader, selected.HelmTemplate
+	file.Evidence = inventory.Evidence{Kind: "present", Collector: "file", Location: selected.Location}
 	return visit(file)
 }

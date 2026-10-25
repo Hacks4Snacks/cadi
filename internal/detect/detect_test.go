@@ -22,8 +22,8 @@ type fixtureDetector struct {
 }
 
 func (*fixtureDetector) Name() string { return "fixture" }
-func (*fixtureDetector) Match(file *input.File, _ []byte) bool {
-	return strings.HasSuffix(file.Name, ".finding")
+func (*fixtureDetector) Match(file *input.File, _ []byte) Match {
+	return Match{Applicable: strings.HasSuffix(file.Name, ".finding")}
 }
 func (d *fixtureDetector) Detect(ctx context.Context, file *input.File) (inventory.Result, bool, error) {
 	d.calls++

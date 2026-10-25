@@ -6,6 +6,7 @@ require (
 	github.com/CycloneDX/cyclonedx-go v0.12.0
 	github.com/google/go-containerregistry v0.22.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/spf13/pflag v1.0.10
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.58.0
 	golang.org/x/mod v0.42.0

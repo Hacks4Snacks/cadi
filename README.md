@@ -17,13 +17,32 @@ is needed.
 go mod download
 make build
 ./bin/ciphertrail version
-./bin/ciphertrail scan --source . --output cbom.json
+./bin/ciphertrail scan . --output cbom.json
 ```
 
 The module path is `ciphertrail` for local development. Publishing under a
 repository namespace requires updating the module path and internal imports.
 
-## Collectors
+## Inputs and analyzers
+
+The canonical command is `ciphertrail scan PATH...`. Directories are mixed
+repository roots; files are explicit passive inputs. Go, Kubernetes, and artifact
+analysis run where applicable and contribute to one CBOM. Repositories without
+Go modules do not fail Go discovery: coverage records `not-applicable`.
+
+Use `--analyzers` to restrict passive analysis:
+
+```sh
+./bin/ciphertrail scan . --output cbom.json
+./bin/ciphertrail scan . --analyzers go,kubernetes --output cbom.json
+./bin/ciphertrail scan ./rendered.yaml --analyzers kubernetes --offline
+```
+
+The available analyzer names are `go`, `kubernetes`, and `artifact`. Omitting
+`--analyzers` selects all three; an empty or unknown selection is an error.
+Images and TLS/SSH targets remain explicit options, not inferred from references
+found in a repository. Go analysis needs a directory with a `go.mod` at or below
+that root; it does not treat an isolated `.go` file as a complete project.
 
 | Input                | Evidence collected                                           | Important boundary                                        |
 |----------------------|--------------------------------------------------------------|-----------------------------------------------------------|
@@ -38,21 +57,23 @@ Inputs can be repeated and combined in one report:
 
 ```sh
 ./bin/ciphertrail scan \
-  --source ./service \
-  --file ./certificates \
-  --file ./service-binary \
+  ./service \
+  ./certificates \
+  ./service-binary \
   --image ./service-image.tar \
-  --manifest ./rendered-manifests \
+  ./rendered-manifests \
   --output service.cbom.json
 ```
 
-An optional positional directory is equivalent to `--source`. Put flags before it:
+Flags may appear before or after paths. Use `--` before a path beginning with `-`:
 
 ```sh
-./bin/ciphertrail scan --goos linux --goarch amd64 --tags production .
+./bin/ciphertrail scan . --goos linux --goarch amd64 --tags production
 ```
 
-Without `--output`, JSON goes to stdout. Diagnostics go to stderr.
+Without `--output`, JSON goes to stdout. Coverage summaries, grouped diagnostics,
+and operational errors go to stderr. Overlapping paths are normalized and shared
+file/module work is deduplicated without merging distinct evidence contexts.
 
 ## Crypto-focused output
 
@@ -77,8 +98,8 @@ probes do not infer the remote server's implementation library.
 To include the full collected software/dependency inventory instead:
 
 ```sh
-./bin/ciphertrail scan --source . --include-dependencies --output combined-bom.json
-./bin/ciphertrail scan --file ./service-binary --include-dependencies --output binary-bom.json
+./bin/ciphertrail scan . --include-dependencies --output combined-bom.json
+./bin/ciphertrail scan ./service-binary --include-dependencies --output binary-bom.json
 ```
 
 Both modes use the same collectors and preserve crypto asset references,
@@ -99,7 +120,7 @@ are not treated as cryptography.
 
 ### Repository boundaries
 
-A source root is scanned as one repository. Discovery stops at nested
+A directory root is scanned as one repository. Discovery stops at nested
 directories containing a `.git` directory or file, including independent
 checkouts, submodules, and worktrees. Ordinary nested Go modules without a Git
 boundary are still scanned.
@@ -113,8 +134,8 @@ To include another repository deliberately, add it as a source root or opt into
 recursive repository discovery:
 
 ```sh
-./bin/ciphertrail scan --source ./project --source ./project/other-repository
-./bin/ciphertrail scan --source ./project --include-nested-repos
+./bin/ciphertrail scan ./project ./project/other-repository
+./bin/ciphertrail scan ./project --include-nested-repos
 ```
 
 Explicit source exclusions still apply in recursive mode. Required imports are
@@ -241,15 +262,22 @@ Source exclusions apply to these declarations too. A reusable key configuration
 may have its own declaration evidence as well as evidence at a certificate
 specification that uses it; neither entry represents an observed private key.
 
-### Excluding test helpers and fixtures
+### Shared repository exclusions
 
-`_test.go` files and `testdata/` directories are excluded by the existing Go
-scope rules. A normal file such as `internal/testutil/crypto.go` is still
+Repository discovery excludes hidden metadata directories and common output,
+dependency, and fixture directories: `vendor`, `node_modules`, `testdata`, `test`,
+`tests`, `mocks`, `samples`, `examples`, `bin`, `out`, `dist`, `build`, `target`,
+`coverage`, and `__pycache__`. The selected root itself is not excluded by its
+name. Recognized CBOM/SBOM files and the requested output file are excluded so
+generated inventories are not recursively scanned.
+
+Go also excludes `_test.go` files through its build context. A normal file such
+as `internal/testutil/crypto.go` is still
 ordinary Go source; CipherTrail does not guess that it is test-only from its
 directory name.
 
-Add literal source-relative file or directory paths to `.ciphertrailignore` at
-the root passed to `--source`:
+Add literal root-relative file or directory paths to `.ciphertrailignore` at
+each selected directory root. These rules apply to every passive analyzer:
 
 ```text
 # Test-only source maintained by this project
@@ -264,22 +292,25 @@ self-scan omits its disposable certificate/key fixtures. This is separate from
 For a one-off scan, use repeatable `--exclude` options:
 
 ```sh
-./bin/ciphertrail scan --source . \
+./bin/ciphertrail scan . \
   --exclude internal/testutil \
   --exclude test/fixtures \
   --output cbom.json
 ```
 
-File and CLI exclusions are combined, normalized, and recorded as
-`ciphertrail:source-exclusion-paths` in collection properties. Paths are anchored
-to each source root and match complete path segments; `internal/testutil` does
+File and CLI exclusions are combined, normalized, and recorded with omissions,
+chart roots, and deduplication counts in the collection's `ciphertrail:scope`
+property. Paths are anchored to each directory root and match complete path
+segments; `internal/testutil` does
 not exclude `internal/testutilities` or `production/testutil`. Blank lines and
 lines beginning with `#` are ignored. Glob patterns, negation, absolute paths,
 and parent traversal are rejected rather than silently misinterpreted.
 
-Only the `.ciphertrailignore` at the explicit source root is read; parent and
-nested ignore files are not inherited. The file must be regular, not a symlink,
-and no larger than 64 KiB.
+Only the `.ciphertrailignore` at each explicit directory root is read; parent and
+nested ignore files are not inherited. Explicit files outside a selected directory
+use their containing directory as the scope root. The ignore file must be regular,
+not a symlink, and no larger than 64 KiB. `.gitignore` is not implicitly treated as
+cryptographic scope.
 
 Excluded packages and nested modules are removed from the scan roots.
 Excluded files do not generate source findings or unmodeled-API notes, including
@@ -288,9 +319,11 @@ sandbox: files belonging to a retained package, and dependencies needed by
 retained code, may still be read for Go type checking. Compilation errors in
 required code remain errors.
 
-These rules apply only to `--source` collection. They do not filter explicit
-`--file`, `--image`, TLS, or SSH inputs: fixture material actually packaged or
-deployed in those targets is still relevant inventory.
+Explicit file inputs can select material under default-excluded directories.
+When a file lies within a selected repository, that repository's configured
+exclusions still apply. Each explicitly selected directory has its own scope;
+overlapping selections are combined before file/module work is assigned.
+Repository exclusions do not filter separately supplied images or active probes.
 
 ### Dependency preparation and read-only analysis
 
@@ -301,7 +334,7 @@ existing Go proxy, private-module, checksum-service, and VCS authentication
 settings, then retries source analysis offline.
 
 ```sh
-./bin/ciphertrail scan --source /path/to/repository --output cbom.json
+./bin/ciphertrail scan /path/to/repository --output cbom.json
 ```
 
 Standalone modules use isolated alternate `go.mod`/`go.sum` files for dependency
@@ -324,7 +357,7 @@ attempt and respects cancellation.
 Use `--offline` for strict cache-only operation:
 
 ```sh
-./bin/ciphertrail scan --source /path/to/repository --offline --output cbom.json
+./bin/ciphertrail scan /path/to/repository --offline --output cbom.json
 ```
 
 In this mode, dependencies and checksums must be available locally. Isolated
@@ -333,7 +366,7 @@ is disabled. `--offline` cannot be combined with TLS/SSH network probes.
 It does not modify normal local file/image collection behavior.
 
 `--include-dependencies` changes which collected components are exported.
-`--include-nested-repos` changes source discovery scope. Neither flag controls
+`--include-nested-repos` changes repository discovery scope. Neither flag controls
 dependency downloads.
 
 The build target is separate from dependency availability. By default Go uses
@@ -341,7 +374,7 @@ the host platform. For Linux-only code scanned on macOS, select its deployment
 target explicitly rather than suppressing platform-specific compilation errors:
 
 ```sh
-./bin/ciphertrail scan --source /path/to/repository \
+./bin/ciphertrail scan /path/to/repository \
   --goos linux --goarch amd64 --output cbom.json
 ```
 
@@ -452,19 +485,20 @@ random-access build-info reads rather than loading the whole executable.
 
 ## Kubernetes and rendered Helm manifests
 
-Use `--manifest` for a local Kubernetes YAML/JSON file or directory. It selects
-only Kubernetes detection and can be repeated or combined with other inputs:
+Supply rendered Kubernetes YAML/JSON as a PATH input. Use `--analyzers kubernetes`
+when only configuration analysis is wanted, or combine it with a repository:
 
 ```sh
-./bin/ciphertrail scan --manifest ./rendered.yaml --offline --output manifests.cbom.json
-./bin/ciphertrail scan --source ./service --manifest ./manifests --output service.cbom.json
+./bin/ciphertrail scan ./rendered.yaml --offline --output manifests.cbom.json
+./bin/ciphertrail scan ./service ./manifests --output service.cbom.json
 ```
 
-File and image scans also register Kubernetes detection for YAML/JSON files.
-`--source` remains the Go project analyzer; it does not implicitly scan charts or
-contact clusters. `.ciphertrailignore`, `--exclude`, and nested-repository options
-remain Go-specific. Select the intended manifest/file roots explicitly; their
-directory traversal skips `.git` and symbolic links, not Go test directories.
+Repository and image scans register Kubernetes detection when that analyzer is
+selected. Repository discovery identifies Helm charts and defers their raw
+template files; it does not execute charts or contact clusters. Artifact files
+such as chart trust stores are still inspected. Add the rendered output as another
+PATH input. An explicitly selected individual template can be inspected, but any
+unresolved Helm expressions remain coverage limitations.
 
 Supported resources:
 
@@ -591,7 +625,7 @@ Namespaced properties add:
   inputs also carry optional resource/document/field `context`.
 - `ciphertrail:collection`: requested target, outcome, collector properties
   (including Go build context, analysis scope, and detailed package-load
-  problems), errors, and limitations.
+  problems), errors, limitations, and typed analyzer `coverage`.
 - `ciphertrail:collection-status`: whether the requested collectors succeeded.
 - `ciphertrail:output-scope`: `crypto-focused` or `full-dependencies`.
 - `ciphertrail:omitted-components`: number of collected components excluded by
@@ -604,6 +638,18 @@ from one location cannot hide unresolved parameters or observations elsewhere.
 Evidence without a location remains component-scoped; no occurrence is invented,
 and a symbol is retained in supplemental provenance if one was supplied.
 Repeated generic source-analysis caveats belong to collection scope metadata.
+
+Each coverage record identifies its analyzer, status, inspected files/modules,
+cryptographic finding count, skipped inputs, and any preparation reason.
+Statuses distinguish `completed`, `failed`, `not-applicable`, `needs-rendering`,
+and `deduplicated`. A completed analyzer can still have skipped templates or
+unmodeled APIs; its counts and detailed diagnostics do not imply exhaustive
+cryptographic coverage. Source build-context options require the `go` analyzer.
+
+Stderr contains one coverage summary per input. Identical diagnostic messages
+are grouped with an occurrence count; every original location remains in the
+CBOM. Exclusions and recognized report files are listed in `ciphertrail:scope`,
+not printed as hundreds of individual notes.
 
 For example, a decoded `ciphertrail:provenance` property can contain:
 
@@ -630,16 +676,14 @@ For example, a decoded `ciphertrail:provenance` property can contain:
 }
 ```
 
-This replaces the former `ciphertrail:evidence` property. Consumers should join
-`provenance.occurrence` to `evidence.occurrences[].bom-ref`, read grouped
+Consumers should join `provenance.occurrence` to `evidence.occurrences[].bom-ref`, read grouped
 `parameters[].values`, and use `unresolved` rather than testing property values
 for the string `"unknown"`. Existing reports can be replaced by rescanning.
-The output remains CycloneDX 1.7; no compatibility flag is required.
+The output is CycloneDX 1.7.
 
 The complete schema bundle, including `cryptography-defs.schema.json`, is pinned
 to the official 1.7 release. Generation and validation target 1.7 only.
-Existing CipherTrail 1.6 reports can be replaced by rerunning the same scan;
-there is no version-conversion step that might discard or change assets.
+There is no version-conversion step that might discard or change assets.
 
 The 1.7 output uses native `certificateProperties.serialNumber` instead of the
 former `ciphertrail:certificate-serial-number` property. Curves use
@@ -694,6 +738,8 @@ separate boundaries:
 
 - [`internal/input`](internal/input): read-only local traversal and effective
   image streams, file lifetimes, bounded buffering, and optional random access.
+- [`internal/scope`](internal/scope): shared discovery snapshots, literal
+  exclusions, repository boundaries, generated-report filtering, and Helm scope.
 - [`internal/detect`](internal/detect): the file-detector contract and dispatch.
 - [`internal/detect/artifact`](internal/detect/artifact): material, OpenSSL, and
   Go binary recognition independent of the input provider.
@@ -705,7 +751,7 @@ separate boundaries:
   metadata parsing, reused by file, manifest, image, and runtime collection.
 - [`internal/probe`](internal/probe): explicitly authorized TLS/SSH interrogation.
 - [`internal/scan`](internal/scan): validated requests, built-in composition,
-  execution, cancellation, and partial-result accounting.
+  normalized/deduplicated planning, execution, cancellation, and coverage.
 - [`internal/inventory`](internal/inventory): evidence, ownership, relationships,
   stable references, and reusable configuration constructors.
 - [`internal/export/cyclonedx`](internal/export/cyclonedx): graph selection,
@@ -715,7 +761,8 @@ separate boundaries:
 To add a file detection type:
 
 1. Implement `detect.Detector` (`Name`, `Match`, and `Detect`) in a detector
-   package. Return `inventory.Result` and whether the format was recognized.
+   package. `Match` reports applicability or a preparation reason; `Detect`
+   returns `inventory.Result` and whether the format was recognized.
 2. Read through `input.File`; set an appropriate bound with `ReadAll`. Multiple
    detectors share the same buffered content. Do not retain readers after the
    callback or mutate shared buffers.

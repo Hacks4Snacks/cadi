@@ -26,6 +26,20 @@ func Run(ctx context.Context, requests []Request) []inventory.Collection {
 		} else {
 			collection.Result, collection.Err = request.Collector.Collect(ctx)
 		}
+		if request.Name == "tls" || request.Name == "ssh" {
+			status := "completed"
+			if collection.Err != nil {
+				status = "failed"
+			}
+			refs := map[string]bool{}
+			for _, entry := range collection.Result.Entries {
+				if entry.Component.CryptoProperties != nil {
+					refs[entry.Component.BOMRef] = true
+				}
+			}
+			collection.Result.Coverage = append(collection.Result.Coverage,
+				inventory.Coverage{Analyzer: request.Name, Status: status, Findings: len(refs)})
+		}
 		collections = append(collections, collection)
 	}
 	return collections

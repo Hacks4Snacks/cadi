@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"strings"
 
 	"ciphertrail/internal/inventory"
+	"ciphertrail/internal/scope"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/tools/go/packages"
@@ -32,13 +32,28 @@ type Source struct {
 	Exclude            []string
 	IncludeNestedRepos bool
 	Offline            bool
+	Selection          *scope.Selection
 }
 
 const analysisScope = "source evidence describes configured call sites and declarations, not runtime execution; only documented APIs and bounded value flows are modeled; material contents, issuance, operation success, negotiation, subsequent mutations, and implicit defaults are not established"
 
 // Collect accounts for each discovered module and returns partial evidence with any load failure.
-func (s Source) Collect(ctx context.Context) (inventory.Result, error) {
-	result := inventory.Result{Properties: []cdx.Property{
+func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr error) {
+	modulesRun, goFiles := 0, 0
+	defer func() {
+		status := "completed"
+		if returnErr != nil {
+			status = "failed"
+		}
+		refs := map[string]bool{}
+		for _, entry := range result.Entries {
+			if entry.Component.Type == cdx.ComponentTypeCryptographicAsset {
+				refs[entry.Component.BOMRef] = true
+			}
+		}
+		result.Coverage = append(result.Coverage, inventory.Coverage{Analyzer: "go", Status: status, Modules: modulesRun, Files: goFiles, Findings: len(refs)})
+	}()
+	result = inventory.Result{Properties: []cdx.Property{
 		{Name: "ciphertrail:analysis-scope", Value: analysisScope},
 		{Name: "ciphertrail:source-exclusions", Value: "test files; vendor; testdata; hidden directories; node_modules"},
 	}}
@@ -70,48 +85,28 @@ func (s Source) Collect(ctx context.Context) (inventory.Result, error) {
 	if !info.IsDir() {
 		return result, fmt.Errorf("Go source input must be a directory")
 	}
-	exclusions, err := loadExclusions(root, s.Exclude)
-	if err != nil {
-		return result, err
+	selection := s.Selection
+	if selection == nil {
+		discovered, err := scope.Discover(ctx, root, scope.Options{Exclude: s.Exclude, IncludeNestedRepos: s.IncludeNestedRepos})
+		if err != nil {
+			return result, fmt.Errorf("discover Go source scope: %w", err)
+		}
+		selection = &discovered
 	}
-	if len(exclusions) > 0 {
-		data, err := json.Marshal(exclusions)
+	if len(selection.Exclusions) > 0 {
+		data, err := json.Marshal(selection.Exclusions)
 		if err != nil {
 			return result, fmt.Errorf("encode source exclusion scope: %w", err)
 		}
 		result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:source-exclusion-paths", Value: string(data)})
 	}
-	var modules, nestedRepositories []string
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	modules := selection.Modules
+	var nestedRepositories []string
+	for _, omission := range selection.Omissions {
+		if omission.Reason == "nested-repository" {
+			nestedRepositories = append(nestedRepositories, omission.Path)
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if path != root && (sourcePathExcluded(root, path, exclusions) || entry.IsDir() && excluded(entry.Name())) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if path != root && entry.IsDir() && !s.IncludeNestedRepos {
-			_, markerErr := os.Lstat(filepath.Join(path, ".git"))
-			if markerErr == nil {
-				boundary := relative(root, path)
-				nestedRepositories = append(nestedRepositories, boundary)
-				exclusions = append(exclusions, boundary)
-				return filepath.SkipDir
-			}
-			if !os.IsNotExist(markerErr) {
-				return fmt.Errorf("inspect nested repository boundary: %w", markerErr)
-			}
-		}
-		if !entry.IsDir() && entry.Name() == "go.mod" {
-			modules = append(modules, filepath.Dir(path))
-		}
-		return nil
-	})
+	}
 	if len(nestedRepositories) > 0 {
 		data, encodeErr := json.Marshal(nestedRepositories)
 		if encodeErr != nil {
@@ -119,12 +114,9 @@ func (s Source) Collect(ctx context.Context) (inventory.Result, error) {
 		}
 		result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:excluded-nested-repositories", Value: string(data)})
 	}
-	if err != nil {
-		return result, fmt.Errorf("discover Go modules: %w", err)
-	}
 	if len(modules) == 0 {
 		if len(nestedRepositories) > 0 {
-			return result, fmt.Errorf("no Go modules selected in %s; use explicit --source roots or --include-nested-repos for nested repositories", root)
+			return result, fmt.Errorf("no Go modules selected in %s; use explicit input roots or --include-nested-repos for nested repositories", root)
 		}
 		return result, fmt.Errorf("no Go modules found in %s", root)
 	}
@@ -146,11 +138,19 @@ func (s Source) Collect(ctx context.Context) (inventory.Result, error) {
 	}
 	result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:build-context", Value: string(encodedBuild)})
 	var failures error
+	selected := make(map[string]bool, len(selection.Files))
+	for _, file := range selection.Files {
+		selected[file.Path] = true
+		if inside(root, file.Path) && strings.HasSuffix(file.Path, ".go") && !strings.HasSuffix(file.Path, "_test.go") {
+			goFiles++
+		}
+	}
 	for _, module := range modules {
 		if err := ctx.Err(); err != nil {
 			return result, errors.Join(failures, err)
 		}
-		partial, err := s.scanModule(ctx, root, module, env, string(encodedBuild), build["GOVERSION"], exclusions)
+		modulesRun++
+		partial, err := s.scanModule(ctx, root, module, env, string(encodedBuild), build["GOVERSION"], selected)
 		result.Merge(partial)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("%s: %w", relative(root, module), err))
@@ -159,7 +159,9 @@ func (s Source) Collect(ctx context.Context) (inventory.Result, error) {
 	return result, failures
 }
 
-func (s Source) scanModule(ctx context.Context, root, directory string, env []string, build, version string, exclusions []string) (result inventory.Result, returnErr error) {
+func (s Source) scanModule(ctx context.Context, root, directory string, env []string, build, version string, selected map[string]bool) (result inventory.Result, returnErr error) {
+	var exclusions []string
+	excludedFiles := map[string]bool{}
 	files, err := isolateModuleFiles(ctx, directory, env)
 	if err != nil {
 		return result, err
@@ -180,12 +182,20 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 	}
 	prepared := false
 	selectRoots := func(loaded []*packages.Package) []*packages.Package {
+		for _, pkg := range loaded {
+			for _, file := range pkg.GoFiles {
+				if !selected[file] && !excludedFiles[file] && inside(root, file) {
+					exclusions = append(exclusions, relative(root, file))
+					excludedFiles[file] = true
+				}
+			}
+		}
 		return slices.DeleteFunc(loaded, func(pkg *packages.Package) bool {
 			if len(pkg.GoFiles) == 0 {
 				return false
 			}
 			for _, file := range pkg.GoFiles {
-				if !sourcePathExcluded(root, file, exclusions) {
+				if selected[file] {
 					return false
 				}
 			}
@@ -333,7 +343,7 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 					continue
 				}
 				position := program.Fset.PositionFor(call.Pos(), false)
-				if !inside(root, position.Filename) || sourcePathExcluded(root, position.Filename, exclusions) {
+				if !inside(root, position.Filename) || scope.PathExcluded(root, position.Filename, exclusions) {
 					continue
 				}
 				evidence := inventory.Evidence{Kind: "configured", Collector: "go",

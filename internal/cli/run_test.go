@@ -25,7 +25,7 @@ func TestCLIFileOutputAndOperationalFailure(t *testing.T) {
 	}
 	for range 2 {
 		var stdout, stderr bytes.Buffer
-		if code := Run(context.Background(), []string{"scan", "--file", input, "--output", output}, &stdout, &stderr); code != 0 {
+		if code := Run(context.Background(), []string{"scan", input, "--output", output}, &stdout, &stderr); code != 0 {
 			t.Fatalf("exit=%d: %s", code, stderr.String())
 		}
 		if stdout.Len() != 0 {
@@ -40,7 +40,7 @@ func TestCLIFileOutputAndOperationalFailure(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", "--file", input, "--file", filepath.Join(directory, "missing.pem")}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", input, filepath.Join(directory, "missing.pem")}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stdout.String(), "incomplete") || stderr.Len() == 0 {
 		t.Fatalf("missing partial/error behavior: exit=%d stderr=%s", code, stderr.String())
 	}
@@ -49,18 +49,18 @@ func TestCLIFileOutputAndOperationalFailure(t *testing.T) {
 	}
 }
 
-func TestExisting16ReportCanBeRegeneratedAs17(t *testing.T) {
+func TestExistingReportCanBeReplaced(t *testing.T) {
 	_, _, certificate, _ := testutil.Identity(t)
 	directory := t.TempDir()
 	input, output := filepath.Join(directory, "certificate.pem"), filepath.Join(directory, "cbom.json")
 	if err := os.WriteFile(input, certificate, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(output, []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,"metadata":{"tools":{"components":[{"type":"application","name":"ciphertrail"}]}}}`), 0600); err != nil {
+	if err := os.WriteFile(output, []byte(`{"bomFormat":"CycloneDX","specVersion":"1.7","version":1,"metadata":{"tools":{"components":[{"type":"application","name":"ciphertrail"}]}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", "--file", input, "--output", output}, &stdout, &stderr); code != 0 {
+	if code := Run(context.Background(), []string{"scan", input, "--output", output}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	data, err := os.ReadFile(output)
@@ -92,7 +92,7 @@ func TestOutputCannotOverwriteInputOrUnrelatedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		var stdout, stderr bytes.Buffer
-		if code := Run(context.Background(), []string{"scan", "--file", input, "--output", output}, &stdout, &stderr); code == 0 {
+		if code := Run(context.Background(), []string{"scan", input, "--output", output}, &stdout, &stderr); code == 0 {
 			t.Fatal("destructive output accepted")
 		}
 		after, err := os.ReadFile(output)
@@ -113,7 +113,7 @@ func TestOutputSymlinkIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", "--file", input, "--output", output}, &stdout, &stderr); code == 0 {
+	if code := Run(context.Background(), []string{"scan", input, "--output", output}, &stdout, &stderr); code == 0 {
 		t.Fatal("output symlink accepted")
 	}
 }
@@ -136,7 +136,7 @@ func TestGoScanThroughCLI(t *testing.T) {
 	if err := cyclonedx.Validate(stdout.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	if stderr.Len() != 0 {
+	if strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:") {
 		t.Fatalf("fully modeled source should not emit boilerplate notes: %s", stderr.String())
 	}
 }
@@ -152,7 +152,7 @@ func TestOfflineCLISelectsDependencyMode(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", "--source", directory, "--offline"}, &stdout, &stderr); code != 0 {
+	if code := Run(context.Background(), []string{"scan", directory, "--offline"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("offline CLI failed: %d %s", code, stderr.String())
 	}
 	var bom cdx.BOM
@@ -188,7 +188,7 @@ func TestGoScanRetainsActionableUnknownAPINotes(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", "--source", directory}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", directory}, &stdout, &stderr)
 	if code != 0 || !strings.Contains(stderr.String(), "NOTE: main.go:3: cryptographic API not modeled: (crypto.Signer).Sign") {
 		t.Fatalf("unknown API was hidden: exit=%d stderr=%s", code, stderr.String())
 	}
@@ -214,7 +214,7 @@ func TestDependencyInventoryIsOptIn(t *testing.T) {
 	}
 	var cryptoRef string
 	for _, include := range []bool{false, true} {
-		args := []string{"scan", "--source", directory}
+		args := []string{"scan", directory}
 		if include {
 			args = append(args, "--include-dependencies")
 		}
@@ -258,8 +258,8 @@ func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", "--source", directory, "--exclude", "other_fixture.go", "--exclude", "unused_helpers"}, &stdout, &stderr)
-	if code != 0 || stderr.Len() != 0 {
+	code := Run(context.Background(), []string{"scan", directory, "--exclude", "other_fixture.go", "--exclude", "unused_helpers"}, &stdout, &stderr)
+	if code != 0 || (strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:")) {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	var bom cdx.BOM
@@ -279,7 +279,7 @@ func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 func TestOutputCannotCreateOrOverwriteSourceIgnoreFile(t *testing.T) {
 	directory := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", "--source", directory, "--output", filepath.Join(directory, ".ciphertrailignore")}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", directory, "--output", filepath.Join(directory, ".ciphertrailignore")}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "overwrite a scan input") {
 		t.Fatalf("ignore file was not protected: exit=%d stderr=%s", code, stderr.String())
 	}
@@ -304,12 +304,12 @@ func TestNestedRepositoryCLIInclusionIsExplicit(t *testing.T) {
 		}
 	}
 	for _, include := range []bool{false, true} {
-		args := []string{"scan", "--source", directory}
+		args := []string{"scan", directory}
 		if include {
 			args = append(args, "--include-nested-repos")
 		}
 		var stdout, stderr bytes.Buffer
-		if code := Run(context.Background(), args, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		if code := Run(context.Background(), args, &stdout, &stderr); code != 0 || (strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:")) {
 			t.Fatalf("include=%v exit=%d stderr=%s", include, code, stderr.String())
 		}
 		if strings.Contains(stdout.String(), `"name": "SHA-512"`) != include {
@@ -324,10 +324,11 @@ func TestInvalidOptionsAndCredentialURLs(t *testing.T) {
 		{"scan", "--tls", "https://user:SECRET@example.test:443"},
 		{"scan", "--ssh", "example.test:0"},
 		{"scan", "--tls", "localhost:443", "--timeout", "0"},
-		{"scan", "--file", ".", "--client-key", "key.pem"},
-		{"scan", "--file", ".", "--exclude", "internal/testutil"},
-		{"scan", "--file", ".", "--include-nested-repos"},
-		{"scan", "--source", ".", "--offline", "--tls", "localhost:443"},
+		{"scan", ".", "--client-key", "key.pem"},
+		{"scan", ".", "--analyzers", "unknown"},
+		{"scan", ".", "--analyzers", ""},
+		{"scan", ".", "--exclude", "../outside"},
+		{"scan", ".", "--offline", "--tls", "localhost:443"},
 		{"scan", "--offline", "--ssh", "localhost:22"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -361,8 +362,8 @@ func TestDiagnosticPresentation(t *testing.T) {
 
 func TestSelfScanIsQuietAndRetainsCryptoEvidence(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", "--source", "../.."}, &stdout, &stderr)
-	if code != 0 || stderr.Len() != 0 {
+	code := Run(context.Background(), []string{"scan", "../.."}, &stdout, &stderr)
+	if code != 0 || (strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:")) {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	var bom cdx.BOM

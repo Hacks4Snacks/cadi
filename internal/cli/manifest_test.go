@@ -33,10 +33,13 @@ func TestManifestAndFileInputsUseKubernetesDetection(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := testutil.ImageArchive(t, map[string][]byte{"manifests/secret.json": data})
-	for _, test := range []struct{ option, path string }{{"--manifest", path}, {"--file", path}, {"--image", archive}} {
-		t.Run(test.option, func(t *testing.T) {
+	for name, args := range map[string][]string{
+		"path":  {"scan", path, "--offline"},
+		"image": {"scan", "--image", archive, "--offline"},
+	} {
+		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			if code := Run(context.Background(), []string{"scan", test.option, test.path, "--offline"}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+			if code := Run(context.Background(), args, &stdout, &stderr); code != 0 || strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:") {
 				t.Fatalf("input failed: code=%d stderr=%s", code, stderr.String())
 			}
 			if err := cyclonedx.Validate(stdout.Bytes()); err != nil {
@@ -67,7 +70,7 @@ func TestManifestFailuresArePartialAndOutputIsProtected(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", "--manifest", path}, &stdout, &stderr); code != 1 {
+	if code := Run(context.Background(), []string{"scan", path}, &stdout, &stderr); code != 1 {
 		t.Fatalf("malformed resource did not fail operationally: %d %s", code, stderr.String())
 	}
 	if err := cyclonedx.Validate(stdout.Bytes()); err != nil {
@@ -79,7 +82,7 @@ func TestManifestFailuresArePartialAndOutputIsProtected(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := Run(context.Background(), []string{"scan", "--manifest", path, "--output", path}, &stdout, &stderr); code != 1 {
+	if code := Run(context.Background(), []string{"scan", path, "--output", path}, &stdout, &stderr); code != 1 {
 		t.Fatal("manifest output protection was bypassed")
 	}
 	actual, err := os.ReadFile(path)
@@ -102,11 +105,14 @@ func TestEmbeddedConfigMapUsesAllFileInputModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	image := testutil.ImageArchive(t, map[string][]byte{"manifests/configmap.json": data})
-	for _, target := range []struct{ flag, path string }{{"--manifest", file}, {"--file", file}, {"--image", image}} {
-		t.Run(target.flag, func(t *testing.T) {
+	for name, args := range map[string][]string{
+		"path":  {"scan", file, "--offline"},
+		"image": {"scan", "--image", image, "--offline"},
+	} {
+		t.Run(name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(context.Background(), []string{"scan", target.flag, target.path, "--offline"}, &stdout, &stderr)
-			if code != 0 || stderr.Len() != 0 {
+			code := Run(context.Background(), args, &stdout, &stderr)
+			if code != 0 || (strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:")) {
 				t.Fatalf("embedded scan failed: %d %s", code, stderr.String())
 			}
 			var bom cdx.BOM
@@ -133,7 +139,7 @@ func TestExplicitMaterialWithoutExtensionStillUsesFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", "--file", path}, &stdout, &stderr); code != 0 {
+	if code := Run(context.Background(), []string{"scan", path}, &stdout, &stderr); code != 0 {
 		t.Fatalf("explicit material detection regressed: %d %s", code, stderr.String())
 	}
 }

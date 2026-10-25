@@ -10,6 +10,7 @@ import (
 
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/probe"
+	"ciphertrail/internal/scope"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/tools/go/packages"
@@ -33,7 +34,7 @@ func scanCryptoDeclarations(result *inventory.Result, root string, pkg *packages
 				return true
 			}
 			position := pkg.Fset.PositionFor(literal.Pos(), false)
-			if !inside(root, position.Filename) || sourcePathExcluded(root, position.Filename, exclusions) {
+			if !inside(root, position.Filename) || scope.PathExcluded(root, position.Filename, exclusions) {
 				return true
 			}
 			path, name := named.Obj().Pkg().Path(), named.Obj().Name()

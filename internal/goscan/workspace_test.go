@@ -18,6 +18,7 @@ import (
 
 	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
+	"ciphertrail/internal/scope"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -352,7 +353,7 @@ func TestSourceExclusionsAreLiteralRootRelativePaths(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".ciphertrailignore"), []byte("# comment\n\n./internal/testutil/\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	exclusions, err := loadExclusions(root, []string{"fixtures.go", "internal/testutil"})
+	exclusions, err := scope.LoadExclusions(root, []string{"fixtures.go", "internal/testutil"})
 	if err != nil || len(exclusions) != 2 {
 		t.Fatalf("exclusion composition failed: %v %v", exclusions, err)
 	}
@@ -367,12 +368,12 @@ func TestSourceExclusionsAreLiteralRootRelativePaths(t *testing.T) {
 		{"internal/testutilities/crypto.go", false},
 		{"other/internal/testutil/crypto.go", false},
 	} {
-		if got := sourcePathExcluded(root, filepath.Join(root, tt.path), exclusions); got != tt.excluded {
+		if got := scope.PathExcluded(root, filepath.Join(root, tt.path), exclusions); got != tt.excluded {
 			t.Errorf("%s: excluded=%v", tt.path, got)
 		}
 	}
 	for _, invalid := range []string{"", ".", "..", "../secret", "/absolute", "a/../b", "**/testutil", "!keep", "a\\b", "https://example.test/path"} {
-		if _, err := loadExclusions(root, []string{invalid}); err == nil {
+		if _, err := scope.LoadExclusions(root, []string{invalid}); err == nil {
 			t.Errorf("invalid exclusion accepted: %q", invalid)
 		}
 	}
@@ -383,7 +384,7 @@ func TestInvalidIgnoreFileFailsExplicitly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".ciphertrailignore"), []byte("../outside\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadExclusions(root, nil); err == nil || !strings.Contains(err.Error(), ".ciphertrailignore:1") {
+	if _, err := scope.LoadExclusions(root, nil); err == nil || !strings.Contains(err.Error(), ".ciphertrailignore:1") {
 		t.Fatalf("invalid file rule was ignored: %v", err)
 	}
 }
@@ -397,7 +398,7 @@ func TestIgnoreFileCannotBeASymlink(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(root, ".ciphertrailignore")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadExclusions(root, nil); err == nil || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
+	if _, err := scope.LoadExclusions(root, nil); err == nil || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
 		t.Fatalf("unsafe configuration read: %v", err)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"ciphertrail/internal/detect"
 	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
 
@@ -29,14 +30,17 @@ type Detector struct{ Strict bool }
 func (Detector) Name() string { return "kubernetes" }
 
 // Match selects YAML/JSON files, or an explicitly selected manifest with another suffix.
-func (d Detector) Match(file *input.File, _ []byte) bool {
+func (d Detector) Match(file *input.File, _ []byte) detect.Match {
+	if file.HelmTemplate && !file.Explicit {
+		return detect.Match{Deferred: "Helm templates require rendered YAML/JSON"}
+	}
 	switch strings.ToLower(filepath.Ext(file.Name)) {
 	case ".yaml", ".yml", ".json":
-		return true
+		return detect.Match{Applicable: true}
 	case ".tpl":
-		return d.Strict
+		return detect.Match{Applicable: d.Strict}
 	default:
-		return d.Strict && file.Explicit
+		return detect.Match{Applicable: d.Strict && file.Explicit}
 	}
 }
 

@@ -73,8 +73,10 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 			Error       string                 `json:"error,omitempty"`
 			Properties  []cdx.Property         `json:"properties,omitempty"`
 			Diagnostics []inventory.Diagnostic `json:"diagnostics,omitempty"`
+			Coverage    []inventory.Coverage   `json:"coverage,omitempty"`
 		}{Collector: collection.Collector, Target: collection.Target, Status: status,
-			Properties: slices.Clone(collection.Result.Properties), Diagnostics: collection.Result.Diagnostics}
+			Properties: slices.Clone(collection.Result.Properties), Diagnostics: collection.Result.Diagnostics,
+			Coverage: collection.Result.Coverage}
 		slices.SortFunc(outcome.Properties, compareProperty)
 		outcome.Properties = slices.Compact(outcome.Properties)
 		if collection.Err != nil {

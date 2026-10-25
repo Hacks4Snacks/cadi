@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"ciphertrail/internal/inventory"
+	"ciphertrail/internal/scope"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -43,7 +44,7 @@ func newDeclarationProject(root string, loaded []*packages.Package, exclusions [
 					return true
 				}
 				position := pkg.Fset.PositionFor(node.Pos(), false)
-				if !inside(root, position.Filename) || sourcePathExcluded(root, position.Filename, exclusions) {
+				if !inside(root, position.Filename) || scope.PathExcluded(root, position.Filename, exclusions) {
 					return false
 				}
 				switch node := node.(type) {

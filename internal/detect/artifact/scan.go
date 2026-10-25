@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"ciphertrail/internal/detect"
 	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/material"
@@ -24,9 +25,9 @@ type Detector struct{}
 func (Detector) Name() string { return "artifact" }
 
 // Match selects supported names, native executable headers, and PEM content.
-func (Detector) Match(file *input.File, prefix []byte) bool {
-	return materialCandidate(file.Name) || opensslCandidate(file.Name) || binaryMagic(prefix) ||
-		bytes.HasPrefix(bytes.TrimSpace(prefix), []byte("-----BEGIN "))
+func (Detector) Match(file *input.File, prefix []byte) detect.Match {
+	return detect.Match{Applicable: materialCandidate(file.Name) || opensslCandidate(file.Name) || binaryMagic(prefix) ||
+		bytes.HasPrefix(bytes.TrimSpace(prefix), []byte("-----BEGIN "))}
 }
 
 // Detect inspects a file without executing it or exporting private material.

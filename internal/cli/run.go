@@ -4,14 +4,16 @@ package cli
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"ciphertrail/internal/export/cyclonedx"
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/scan"
+
+	"github.com/spf13/pflag"
 )
 
 // Version is overridden by release builds.
@@ -20,63 +22,51 @@ var Version = "dev"
 const usage = `CipherTrail: evidence-driven cryptographic inventory
 
 Usage:
-  ciphertrail scan [options] [Go source directory]
+  ciphertrail scan PATH... [options]
+  ciphertrail scan --image PATH | --tls HOST:PORT | --ssh HOST:PORT [options]
   ciphertrail version
 
-Collectors (repeat to combine inputs):
-  --source DIR       Go modules and cryptographic call sites
-  --file PATH        Supported material, configuration files, directories, or Go binaries
-  --image PATH       Single-image Docker save TAR or OCI layout directory
-  --manifest PATH    Kubernetes YAML/JSON file or directory (including rendered Helm output)
-  --tls HOST:PORT    One TLS handshake, with public certificate metadata
-  --ssh HOST:PORT    SSH host key, stopping before authentication
+PATH inputs:
+  Directories are mixed repositories; files are explicit passive inputs.
+  Repeat paths to combine repositories, rendered manifests, and material files.
+  Flags may appear before or after paths. Use -- before a path beginning with -.
+
+Analysis:
+  --analyzers go,kubernetes,artifact
+                    Select passive analyzers (default: all supported analyzers)
+  --exclude PATH    Exclude a literal root-relative file/directory for all analyzers
+  --include-nested-repos
+                    Include nested Git repositories (default: separate roots)
+  --goos OS --goarch ARCH --tags TAGS
+                    Build context for Go source analysis
+  --offline         Disable dependency downloads and disallow TLS/SSH probes
+
+Additional explicit inputs:
+  --image PATH      Single-image Docker save TAR or OCI layout directory
+  --tls HOST:PORT   One TLS handshake, with public certificate metadata
+  --ssh HOST:PORT   SSH host key, stopping before authentication
 
 Output:
-  --output PATH      CycloneDX 1.7 JSON (default: stdout)
+  --output PATH     CycloneDX 1.7 JSON (default: stdout)
   --include-dependencies
                     Include all collected software; default is crypto-focused
 
 Runtime options:
-  --timeout 5s       Deadline per endpoint
-  --server-name NAME Override TLS SNI and hostname verification
-  --ca-file PATH    PEM trust roots for TLS verification
+  --timeout 5s      Deadline per endpoint
+  --server-name NAME --ca-file PATH
+                    TLS server identity and trust roots
   --client-cert PATH --client-key PATH
-                    Optional mTLS client identity
-  --tls-insecure    Explicitly observe TLS without verifying the peer
+                    Optional mTLS identity
+  --tls-insecure    Explicitly observe TLS without peer verification
 
-Go options:
-  --goos OS --goarch ARCH --tags TAGS
-  --offline         Disable dependency downloads; incompatible with TLS/SSH probes
-  --exclude PATH    Exclude a Go source-relative file/directory (repeatable)
-  --include-nested-repos
-                    Descend into nested Git repositories (default: separate roots)
-
-Go source scans prepare missing dependencies using existing Go settings, then
-analyze offline. They also read .ciphertrailignore at each source root.
-
-Place flags before the optional positional directory.
+Repository scope reads .ciphertrailignore and excludes generated output, known
+test/dependency directories, and nested Git repositories by default. Explicit
+file inputs can select material inside default-excluded directories.
+Helm templates require separately rendered YAML/JSON; charts are not executed.
 No network discovery, source uploads, policy verdicts, or target execution.
-Manifest detection does not run Helm or contact Kubernetes clusters.
 `
 
-type repeated []string
-
-func (r *repeated) String() string { return fmt.Sprint([]string(*r)) }
-func (r *repeated) Set(value string) error {
-	if value == "" {
-		return errors.New("input must not be empty")
-	}
-	*r = append(*r, value)
-	return nil
-}
-
-type options struct {
-	scan.Options
-	output              string
-	includeDependencies bool
-}
-
-// Run returns 0 on successful collection, 1 on operational failure, and 2 on invalid usage.
+// Run returns 0 on completed collection, 1 on operational failure, and 2 on invalid usage.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
@@ -94,79 +84,73 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ERROR: unknown command; use ciphertrail help")
 		return 2
 	}
-	var opts options
-	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
+	var options scan.Options
+	var output string
+	var includeDependencies bool
+	flags := pflag.NewFlagSet("scan", pflag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.Usage = func() { fmt.Fprint(stderr, usage) }
-	flags.Var((*repeated)(&opts.Sources), "source", "Go source directory")
-	flags.Var((*repeated)(&opts.Files), "file", "local material/configuration file, directory, or Go binary")
-	flags.Var((*repeated)(&opts.Images), "image", "Docker archive or OCI layout directory")
-	flags.Var((*repeated)(&opts.Manifests), "manifest", "local Kubernetes YAML/JSON file or directory")
-	flags.Var((*repeated)(&opts.TLS), "tls", "TLS host:port")
-	flags.Var((*repeated)(&opts.SSH), "ssh", "SSH host:port")
-	flags.StringVar(&opts.output, "output", "-", "output file or - for stdout")
-	flags.BoolVar(&opts.includeDependencies, "include-dependencies", false, "include the full collected dependency inventory")
-	flags.StringVar(&opts.GOOS, "goos", "", "target GOOS")
-	flags.StringVar(&opts.GOARCH, "goarch", "", "target GOARCH")
-	flags.StringVar(&opts.Tags, "tags", "", "Go build tags")
-	flags.BoolVar(&opts.Offline, "offline", false, "use cached Go dependencies only; do not allow downloads")
-	flags.Var((*repeated)(&opts.Exclude), "exclude", "Go source-relative file or directory to exclude (repeatable)")
-	flags.BoolVar(&opts.IncludeNestedRepos, "include-nested-repos", false, "include nested Git repositories in source discovery")
-	flags.DurationVar(&opts.Timeout, "timeout", 5*time.Second, "runtime probe timeout")
-	flags.StringVar(&opts.ServerName, "server-name", "", "TLS server name")
-	flags.StringVar(&opts.CAFile, "ca-file", "", "TLS CA PEM file")
-	flags.StringVar(&opts.ClientCert, "client-cert", "", "mTLS client certificate PEM file")
-	flags.StringVar(&opts.ClientKey, "client-key", "", "mTLS private key PEM file")
-	flags.BoolVar(&opts.Insecure, "tls-insecure", false, "observe TLS without peer verification")
+	flags.Usage = func() { fmt.Fprint(stdout, usage) }
+	flags.StringSliceVar(&options.Analyzers, "analyzers", nil, "passive analyzers: go,kubernetes,artifact")
+	flags.StringArrayVar(&options.Exclude, "exclude", nil, "literal root-relative exclusion")
+	flags.StringArrayVar(&options.Images, "image", nil, "Docker archive or OCI layout directory")
+	flags.StringArrayVar(&options.TLS, "tls", nil, "explicit TLS host:port")
+	flags.StringArrayVar(&options.SSH, "ssh", nil, "explicit SSH host:port")
+	flags.StringVar(&output, "output", "-", "output file or - for stdout")
+	flags.BoolVar(&includeDependencies, "include-dependencies", false, "include the full collected dependency inventory")
+	flags.StringVar(&options.GOOS, "goos", "", "target GOOS")
+	flags.StringVar(&options.GOARCH, "goarch", "", "target GOARCH")
+	flags.StringVar(&options.Tags, "tags", "", "Go build tags")
+	flags.BoolVar(&options.Offline, "offline", false, "use cached Go dependencies only; no runtime probes")
+	flags.BoolVar(&options.IncludeNestedRepos, "include-nested-repos", false, "include nested Git repositories")
+	flags.DurationVar(&options.Timeout, "timeout", 5*time.Second, "runtime probe timeout")
+	flags.StringVar(&options.ServerName, "server-name", "", "TLS server name")
+	flags.StringVar(&options.CAFile, "ca-file", "", "TLS CA PEM file")
+	flags.StringVar(&options.ClientCert, "client-cert", "", "mTLS client certificate PEM file")
+	flags.StringVar(&options.ClientKey, "client-key", "", "mTLS private key PEM file")
+	flags.BoolVar(&options.Insecure, "tls-insecure", false, "observe TLS without peer verification")
 	if err := flags.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if errors.Is(err, pflag.ErrHelp) {
 			return 0
 		}
+		fmt.Fprintln(stderr, "ERROR:", err)
 		return 2
 	}
-	if flags.NArg() > 1 {
-		fmt.Fprintln(stderr, "ERROR: provide at most one positional source directory; place options before it")
+	options.Paths = flags.Args()
+	if output == "" {
+		fmt.Fprintln(stderr, "ERROR: output must be a path or -")
 		return 2
 	}
-	if flags.NArg() == 1 {
-		opts.Sources = append(opts.Sources, flags.Arg(0))
-	}
-	requests, err := opts.Options.Requests()
+	plan, err := options.Prepare(ctx, output)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return 2
 	}
-	if opts.output == "" {
-		fmt.Fprintln(stderr, "ERROR: output must be a path or -")
-		return 2
-	}
-	target, err := prepareOutput(opts.output, opts.LocalInputs())
+	target, err := prepareOutput(output, plan.Inputs)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return 1
 	}
-	collections := scan.Run(ctx, requests)
+	collections := scan.Run(ctx, plan.Requests)
 	failed := false
 	for _, collection := range collections {
 		if collection.Err != nil {
 			failed = true
 			fmt.Fprintf(stderr, "ERROR: %s collection: %v\n", collection.Collector, collection.Err)
 		}
-		for _, diagnostic := range collection.Result.Diagnostics {
-			writeDiagnostic(stderr, diagnostic)
-		}
+		writeCoverage(stderr, collection)
+		writeDiagnostics(stderr, collection.Result.Diagnostics)
 	}
-	data, err := cyclonedx.EncodeWithOptions(collections, cyclonedx.EncodeOptions{IncludeDependencies: opts.includeDependencies})
+	data, err := cyclonedx.EncodeWithOptions(collections, cyclonedx.EncodeOptions{IncludeDependencies: includeDependencies})
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return 1
 	}
 	if target == nil {
 		n, err := stdout.Write(data)
-		if err != nil || n != len(data) {
-			if err == nil {
-				err = io.ErrShortWrite
-			}
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
 			fmt.Fprintln(stderr, "ERROR: write CBOM:", err)
 			return 1
 		}
@@ -178,6 +162,50 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func writeCoverage(writer io.Writer, collection inventory.Collection) {
+	var parts []string
+	for _, coverage := range collection.Result.Coverage {
+		part := coverage.Analyzer + "=" + coverage.Status
+		if coverage.Modules > 0 {
+			part += fmt.Sprintf(" modules=%d", coverage.Modules)
+		}
+		if coverage.Files > 0 {
+			part += fmt.Sprintf(" files=%d", coverage.Files)
+		}
+		if coverage.Findings > 0 {
+			part += fmt.Sprintf(" crypto=%d", coverage.Findings)
+		}
+		if coverage.Skipped > 0 {
+			part += fmt.Sprintf(" skipped=%d", coverage.Skipped)
+		}
+		if coverage.Reason != "" {
+			part += " (" + coverage.Reason + ")"
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) > 0 {
+		fmt.Fprintf(writer, "INFO: %s: %s\n", collection.Target, strings.Join(parts, "; "))
+	}
+}
+
+func writeDiagnostics(writer io.Writer, diagnostics []inventory.Diagnostic) {
+	counts := map[string]int{}
+	for _, diagnostic := range diagnostics {
+		counts[diagnostic.Message]++
+	}
+	for _, diagnostic := range diagnostics {
+		count := counts[diagnostic.Message]
+		if count == 0 {
+			continue
+		}
+		delete(counts, diagnostic.Message)
+		if count > 1 {
+			diagnostic.Message = fmt.Sprintf("%s (%d occurrences; details retained in CBOM)", diagnostic.Message, count)
+		}
+		writeDiagnostic(writer, diagnostic)
+	}
 }
 
 func writeDiagnostic(writer io.Writer, diagnostic inventory.Diagnostic) {

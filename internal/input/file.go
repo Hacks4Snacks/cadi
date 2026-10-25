@@ -25,6 +25,7 @@ type File struct {
 	Name         string
 	Size         int64
 	Explicit     bool
+	HelmTemplate bool
 	Evidence     inventory.Evidence
 	Parent       string
 	RandomAccess io.ReaderAt

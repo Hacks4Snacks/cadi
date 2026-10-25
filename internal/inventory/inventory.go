@@ -93,7 +93,19 @@ type Result struct {
 	Dependencies []Dependency
 	Properties   []cdx.Property
 	Diagnostics  []Diagnostic
+	Coverage     []Coverage
 	err          error
+}
+
+// Coverage describes analyzer execution and preparation gaps, not cryptographic policy.
+type Coverage struct {
+	Analyzer string `json:"analyzer"`
+	Status   string `json:"status"`
+	Files    int    `json:"files,omitempty"`
+	Modules  int    `json:"modules,omitempty"`
+	Findings int    `json:"findings,omitempty"`
+	Skipped  int    `json:"skipped,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // Collector inventories explicit inputs without making policy decisions.
@@ -164,6 +176,7 @@ func (r *Result) Merge(other Result) {
 	r.Dependencies = append(r.Dependencies, other.Dependencies...)
 	r.Properties = append(r.Properties, other.Properties...)
 	r.Diagnostics = append(r.Diagnostics, other.Diagnostics...)
+	r.Coverage = append(r.Coverage, other.Coverage...)
 	r.err = errors.Join(r.err, other.err)
 }
 
