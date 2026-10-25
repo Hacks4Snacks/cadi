@@ -22,7 +22,6 @@ type provenance struct {
 	Time       string                   `json:"time,omitempty"`
 	Symbol     string                   `json:"symbol,omitempty"`
 	Context    *inventory.SourceContext `json:"context,omitempty"`
-	Unresolved []string                 `json:"unresolved,omitempty"`
 	Parameters []parameterGroup         `json:"parameters,omitempty"`
 }
 
@@ -320,7 +319,7 @@ func cryptoReferences(component *cdx.Component) []string {
 }
 
 func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (provenance, error) {
-	record := provenance{Kind: evidence.Kind, Collector: evidence.Collector, Time: evidence.Time, Context: evidence.Context}
+	record := provenance{Kind: evidence.Kind, Collector: evidence.Collector, Time: evidence.Time, Context: sourceLocatorContext(evidence.Context)}
 	if evidence.Location != "" {
 		occurrence := cdx.EvidenceOccurrence{Location: evidence.Location, Symbol: evidence.Symbol}
 		if evidence.Line > 0 {
@@ -328,8 +327,8 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (pr
 			occurrence.Line = &line
 		}
 		parts := []string{"occurrence", component.BOMRef, occurrenceKey(occurrence)}
-		if evidence.Context != nil {
-			context, err := json.Marshal(evidence.Context)
+		if record.Context != nil {
+			context, err := json.Marshal(record.Context)
 			if err != nil {
 				return record, fmt.Errorf("encode occurrence context: %w", err)
 			}
@@ -341,9 +340,7 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (pr
 	} else {
 		record.Symbol = evidence.Symbol
 	}
-	declared := map[string]bool{}
 	for _, fact := range evidence.Parameters {
-		declared[fact.Name] = true
 		index := slices.IndexFunc(record.Parameters, func(group parameterGroup) bool {
 			return group.Basis == fact.Basis && group.Limitation == fact.Limitation
 		})
@@ -356,13 +353,6 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (pr
 			Name: fact.Name, Value: fact.Value, Location: fact.Location, Line: fact.Line, Symbol: fact.Symbol,
 		})
 	}
-	for _, name := range evidence.Unresolved {
-		if !declared[name] {
-			record.Unresolved = append(record.Unresolved, name)
-		}
-	}
-	slices.Sort(record.Unresolved)
-	record.Unresolved = slices.Compact(record.Unresolved)
 	slices.SortFunc(record.Parameters, func(a, b parameterGroup) int {
 		return compareText(a.Basis+"\x00"+a.Limitation, b.Basis+"\x00"+b.Limitation)
 	})
@@ -377,7 +367,30 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (pr
 }
 
 func (p provenance) detailed() bool {
-	return p.Time != "" || p.Symbol != "" || p.Context != nil || len(p.Unresolved) != 0 || len(p.Parameters) != 0
+	return p.Time != "" || p.Symbol != "" || p.Context != nil || len(p.Parameters) != 0
+}
+
+func sourceLocatorContext(source *inventory.SourceContext) *inventory.SourceContext {
+	if source == nil {
+		return nil
+	}
+	context := &inventory.SourceContext{
+		Document: source.Document, Field: source.Field,
+		RenderedFrom: source.RenderedFrom, ContentLine: source.ContentLine,
+	}
+	for _, frame := range source.Embedded {
+		if frame.Document == 0 && frame.Field == "" && frame.File == "" && frame.Line == 0 {
+			continue
+		}
+		context.Embedded = append(context.Embedded, inventory.EmbeddedContext{
+			Document: frame.Document, Field: frame.Field, File: frame.File, Line: frame.Line,
+		})
+	}
+	if context.Document == 0 && context.Field == "" && context.RenderedFrom == "" &&
+		context.ContentLine == 0 && len(context.Embedded) == 0 {
+		return nil
+	}
+	return context
 }
 
 func appendEvidenceProperties(component *cdx.Component, records []provenance) error {

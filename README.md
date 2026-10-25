@@ -221,7 +221,8 @@ do not create fictitious cryptographic assets.
 The static-analysis scope reminder is retained in the CBOM as
 `ciphertrail:analysis-scope` in collection properties and on retained scanned Go
 modules, rather than printed on every successful scan. Unknown parameters remain
-explicit in per-occurrence `unresolved` summaries, not value-shaped placeholders.
+internal analysis facts; their values and per-parameter unresolved lists are
+omitted from the CBOM rather than replaced with placeholders.
 There is no
 blanket suppression for methods named `String`, `Close`, `Public`, or `Verify`.
 
@@ -243,7 +244,11 @@ mode, and peer-verification configuration; subsequent mutations and implicit
 runtime defaults are not evaluated.
 
 All selected packages and functions are inventoried, including functions that
-may never execute. This is not a whole-program reachability proof. `_test.go`
+may never execute. Enumeration follows source declarations, including methods
+on unexported types, generic receiver methods, initializers, and nested closures;
+it does not require a local caller. Generic bodies contribute one source site
+regardless of how many type instantiations use them.
+This is not a whole-program reachability proof. `_test.go`
 files, `testdata`, `vendor`, hidden directories, and `node_modules` are excluded;
 ordinary source packages used only by tests are not automatically classified.
 Standalone test harnesses containing ordinary Go files remain in scope unless
@@ -259,11 +264,14 @@ with the same short names are not treated as certificates.
 These declarations produce configured certificate/key/algorithm assets linked
 to their owning module and the resolved cert-manager API provider. Supported
 settings include the requested key algorithm and size, encoding, rotation
-policy, certificate lifetime, renewal interval, usages, issuer reference,
-secret name, common name, and CA flag.
+policy, usages, and CA flag. Deployment-oriented common/DNS names, issuer and
+Secret references, certificate lifetime, and renewal settings are not collected
+from these specs. Certificate/key/algorithm findings and native relationships
+remain; this does not remove subject, issuer, or validity details parsed from
+actual certificates.
 
 Constant fields and bounded, unambiguous initializer/copy patterns are resolved,
-including private-key struct copies and `metav1.Duration` values. The resolver
+including private-key struct copies and usage lists. The resolver
 can follow zero-argument, receiverless helpers with a single return statement
 across selected source packages. Copies of private immutable settings can
 resolve directly. Detected mutations, escapes, multiple assignments, parameterized
@@ -277,8 +285,8 @@ limitations. A private-key use site can link to its typed definition using a
 engine or compliance verdict. Imported variables without selected source
 initializers remain unknown, even if their names resemble constants (such as
 cert-manager's `RotationPolicyAlways`). No cert-manager defaults are assumed.
-Absent initializer fields are omitted. Explicit fields whose values cannot be
-resolved are listed in the occurrence's `unresolved` summary. Resolved declared
+Absent initializer fields and values that cannot be resolved are omitted from
+the report, without exporting unresolved-field lists. Resolved declared
 values have no companion `unknown` property. Literal values such as `false`, `0`,
 and the string `"unknown"` remain ordinary known values.
 
@@ -529,12 +537,25 @@ attribution. Provider shadow files are checked by filesystem metadata even when
 their contents are excluded. Mutation facts from selected files also invalidate
 nested parameter expressions, not just the outer API call.
 
+Inputs contributing Python files under the same source root share one analysis
+before findings are constructed. Explicit files use their containing directory
+as the root, or the selected repository root when they belong to one. Nested Git
+boundaries honored by discovery keep analysis separate. Only selected files participate:
+grouping does not discover additional files or bypass exclusions.
+
+When multiple inputs contribute distinct files to a shared analysis, their
+collection metadata retains `ciphertrail:python-analysis-target` pointing to a
+`python` collection at that root. Participating inputs show `deduplicated`
+Python coverage; inspected-file counts, findings, and any analysis failure are
+reported once in the shared collection. Overlapping selections still parse each
+physical file only once. Separate source roots do not share mutation facts.
+
 Literal integer expressions, immutable byte lengths, simple aliases, and selected
 constructor results can establish public parameters. These describe visible
 source configuration, not a runtime guarantee. Opaque calls, mutable byte arrays,
 dynamic lookup, arbitrary side effects, and cross-module value/wrapper tracing
-remain outside this bounded analysis. Unresolved parameters stay in provenance;
-unknown-value placeholder properties are not emitted.
+remain outside this bounded analysis. Unresolved parameters are tracked internally
+but are not exported as lists or unknown-value placeholders.
 
 Every finding retains its Python source location, line, and resolved API symbol.
 Provider links identify import namespaces, not installed distributions or
@@ -610,8 +631,8 @@ Supported public metadata sources include:
 - OpenSSH private keys and authorized/public-key entries, where supported by the
   Go SSH library.
 - RSA, ECDSA, Ed25519, and supported ECDH public-key parameters.
-- Encrypted private-key containers, recorded with unresolved algorithm/size
-  summaries and an explicit no-decryption diagnostic rather than decrypted.
+- Encrypted private-key containers, recorded without guessed algorithm/size
+  values and with an explicit no-decryption diagnostic rather than decrypted.
 - Go executable build/module information. Linker flags and arbitrary build
   settings are excluded to avoid exporting embedded secrets.
 - OpenSSL `.cnf` protocol, cipher-selector, group, and signature declarations.
@@ -658,10 +679,10 @@ Supported resources:
 
 | Resource                                             | Inventory treatment                                                                  |
 |------------------------------------------------------|--------------------------------------------------------------------------------------|
-| `cert-manager.io/v1 Certificate`                     | Requested X.509/key configuration, algorithm/size, lifetime, renewal, usages, issuer |
+| `cert-manager.io/v1 Certificate`                     | Requested X.509/key configuration, algorithm/size, encoding, usages, and CA intent   |
 | `v1 Secret`, type `kubernetes.io/tls`                | Public metadata parsed from `tls.crt` and `tls.key`; private bytes are never output  |
 | `networking.k8s.io/v1 Ingress`                       | Explicit TLS entries and declared Secret references; no negotiated protocol claim    |
-| `v1 List` and supported typed Lists                  | Each item analyzed with its own resource identity and JSON-pointer field location    |
+| `v1 List` and supported typed Lists                  | Each item analyzed with a compact owner label and JSON-pointer field location        |
 | `v1 ConfigMap`                                       | Typed YAML/JSON and PEM inside `data` or base64 `binaryData`, with nested provenance |
 | CAPI kubeadm resources, v1beta1/v1beta2              | TLS/CA settings and inline bootstrap file contents                                   |
 | kubeadm configuration, v1beta3/v1beta4               | Explicit cluster/init/join TLS and certificate configuration                         |
@@ -672,8 +693,10 @@ Multi-document YAML and JSON resources are supported. Kubernetes objects require
 Runtime-substituted identities in embedded profiles and CAPI bootstrap resources
 stay unresolved without suppressing known settings. An omitted namespace stays
 unspecified rather than being assumed to be `default`. Absent configuration fields
-do not receive invented defaults. Secret and issuer references are declarations:
-the detector does not look up their targets, prove they exist, or validate an issuer chain.
+do not receive invented defaults. Retained Secret references are declarations:
+the detector does not look up their targets or prove they exist. Cert-manager
+deployment/spec details are omitted as described above; issuer chains are not
+validated from declarations.
 
 For TLS Secrets, `stringData` overrides the corresponding `data` field, matching
 Kubernetes merge semantics. Base64 decoding and material parsing happen locally;
@@ -688,8 +711,8 @@ rendered output. CipherTrail does not invoke Helm, fetch chart dependencies,
 evaluate `lookup`, or reconstruct values files and rendering flags. Recognized
 `# Source: chart/templates/file.yaml` comments are retained as origin metadata.
 Unrendered resource identities/directives produce explicit scope notes;
-unresolved template expressions in supported fields are omitted and recorded
-without suppressing other resolved fields.
+unresolved template expressions in supported fields are omitted without
+exporting per-field unresolved lists or suppressing other resolved fields.
 
 ### Embedded configuration and bootstrap profiles
 
@@ -739,13 +762,16 @@ not infer LUKS/cryptsetup behavior from shell scripts.
 Structured provenance includes:
 
 - `context.document`: one-based YAML/JSON document number.
-- `context.resource`: API version, kind, name, and namespace when supplied.
 - `context.field`: a JSON pointer, including List item and TLS entry indices.
 - `context.renderedFrom`: a recognized Helm source marker, when present.
 - `context.contentLine`: the line inside decoded PEM content, when applicable.
-- `context.unresolved`: unresolved resource identity fields.
-- `context.embedded`: an ordered chain of inner document/resource/field/line
-  positions, declared virtual `file` paths, and unresolved identity/path fields.
+- `context.embedded`: an ordered chain of inner document/field/line positions
+  and declared virtual `file` paths.
+
+Resource identities and unresolved identity/path lists are not repeated in
+exported provenance. A compact resource owner label remains in the graph, without
+separate API-version/kind/namespace properties. Source-locator context is retained
+so embedded findings can still be traced to their containing files and fields.
 
 The native occurrence line still identifies the containing YAML/JSON field;
 decoded YAML or PEM line numbers do not overwrite that source location. For
@@ -775,13 +801,12 @@ Namespaced properties add:
   and agrees on both values. These apply to all of its native occurrences.
 - `ciphertrail:provenance`: occurrence-linked records when evidence has differing
   classifications/collectors or additional detail: observation time, a
-  location-free symbol, source context, unresolved parameters, or declaration
-  facts. These retain `present` / `configured` / `observed` classification, collector, and
-  an optional `unresolved` parameter-name summary. Qualified parameter facts
+  location-free symbol, source-locator context, or declaration facts. These retain
+  `present` / `configured` / `observed` classification and collector. Qualified parameter facts
   are grouped by shared `basis` and `limitation`; each group's `values` retain
   their names, values, and definition locations. Definition locations describe
   parameter origins, not duplicate copies of the asset's use site. Structured
-  inputs also carry optional resource/document/field `context`.
+  inputs also carry optional document/field/embedded-file `context`.
 - `ciphertrail:collection`: requested target, outcome, collector properties
   (including Go build context, analysis scope, and detailed package-load
   problems), errors, limitations, and typed analyzer `coverage`.
@@ -806,8 +831,13 @@ at collection time can change component and occurrence references because
 identity includes collected metadata; regenerated references and graph links
 remain deterministic and internally consistent.
 
-Detailed supplemental provenance is associated with its own occurrence, so declarations
-from one location cannot hide unresolved parameters or observations elsewhere.
+Unresolved lists are omitted through a typed evidence projection, including
+nested source contexts. Internal uncertainty still prevents guessed values, and
+operational failures, coverage gaps, and unmodeled-API diagnostics remain visible.
+An absent field means it was not reported, not that it is known, false, or safe.
+
+Detailed supplemental provenance is associated with its own occurrence, so
+declarations and observations from different locations remain distinct.
 Evidence without a location remains component-scoped; no occurrence is invented,
 and a symbol is retained in supplemental provenance if one was supplied.
 Repeated generic source-analysis caveats belong to collection scope metadata.
@@ -840,15 +870,14 @@ For richer evidence, a decoded `ciphertrail:provenance` property can contain:
   "occurrence": "urn:ciphertrail:<occurrence-hash>",
   "kind": "configured",
   "collector": "go",
-  "unresolved": ["cert-manager.common-name", "cert-manager.secret-name"],
   "parameters": [
     {
       "basis": "declared-policy-initializer",
       "limitation": "declared configuration only; exported mutable policy may change before use",
       "values": [
         {
-          "name": "cert-manager.duration",
-          "value": "720h0m0s",
+          "name": "cert-manager.key-size",
+          "value": "2048",
           "location": "pkg/certpolicy/client.go",
           "line": 40
         }
@@ -859,9 +888,9 @@ For richer evidence, a decoded `ciphertrail:provenance` property can contain:
 ```
 
 Consumers should read the flat classification for simple components. For detailed
-records, join `provenance.occurrence` to `evidence.occurrences[].bom-ref`, read
-grouped `parameters[].values`, and use `unresolved` rather than testing property
-values for the string `"unknown"`. The optional `--summary` understands both
+records, join `provenance.occurrence` to `evidence.occurrences[].bom-ref` and read
+grouped `parameters[].values`. Do not infer values from omitted fields or treat
+a literal string `"unknown"` as a placeholder. The optional `--summary` understands both
 forms. Existing reports can be replaced by rescanning.
 The output is CycloneDX 1.7.
 

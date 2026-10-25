@@ -88,10 +88,14 @@ spec:
 			for _, property := range *entry.Component.Properties {
 				properties[property.Name] = property.Value
 			}
-			if properties["ciphertrail:cert-manager.duration"] != "720h0m0s" ||
-				properties["ciphertrail:cert-manager.renew-before"] != "240h0m0s" ||
-				properties["ciphertrail:cert-manager.is-ca"] != "false" {
+			if properties["ciphertrail:cert-manager.is-ca"] != "false" ||
+				!strings.Contains(properties["ciphertrail:cert-manager.usages"], "server auth") {
 				t.Fatalf("configured values changed: %v", properties)
+			}
+			for _, field := range []string{"duration", "renew-before", "issuer.name", "issuer.kind", "issuer.group", "secret-name", "common-name", "dns-names"} {
+				if _, exists := properties["ciphertrail:cert-manager."+field]; exists {
+					t.Fatalf("deployment-only field was retained: %s", field)
+				}
 			}
 		case "cert-manager Private key configuration":
 			key = context.Field == "/spec/privateKey" &&
@@ -110,6 +114,42 @@ spec:
 	}
 	if _, err := cyclonedx.Encode([]inventory.Collection{{Collector: "kubernetes", Result: result}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCertificateReportOmitsDeploymentDetails(t *testing.T) {
+	document := strings.Replace(certificateManifest, "  secretName: service-tls",
+		"  secretName: OMITTED_SECRET\n  commonName: OMITTED_CN\n  dnsNames: [OMITTED_DNS]", 1)
+	document = strings.Replace(document, "name: internal-ca", "name: OMITTED_ISSUER", 1)
+	result, err := collectManifest(t, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := 0
+	for _, entry := range result.Entries {
+		if entry.Component.Type == cdx.ComponentTypeData {
+			owners++
+			if entry.Component.Name != "Certificate workload/service-tls" || entry.Component.Properties != nil {
+				t.Fatal("resource ownership should retain only its compact label")
+			}
+		}
+	}
+	if owners != 1 {
+		t.Fatal("resource ownership context was lost")
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, omitted := range []string{"OMITTED_", "cert-manager.duration", "cert-manager.renew-before", "cert-manager.issuer", "resource.api-version", "resource.namespace"} {
+			if strings.Contains(string(data), omitted) {
+				t.Fatalf("deployment metadata retained: %s", omitted)
+			}
+		}
+		if !strings.Contains(string(data), "nist/P-256") || !strings.Contains(string(data), "server auth") {
+			t.Fatal("crypto parameters or intended usage were dropped")
+		}
 	}
 }
 

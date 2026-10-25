@@ -27,13 +27,7 @@ func ConfigurationResource(resource ResourceIdentity) cdx.Component {
 	if name != "" {
 		label += " " + name
 	}
-	component := cdx.Component{Type: cdx.ComponentTypeData, Name: label}
-	Property(&component, "resource.api-version", resource.APIVersion)
-	Property(&component, "resource.kind", resource.Kind)
-	if resource.Namespace != "" {
-		Property(&component, "resource.namespace", resource.Namespace)
-	}
-	return component
+	return cdx.Component{Type: cdx.ComponentTypeData, Name: label}
 }
 
 // ConfiguredCertificate records an X.509 declaration or reference, not issued material.

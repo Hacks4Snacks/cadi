@@ -6,7 +6,6 @@ import (
 	"go/constant"
 	"go/types"
 	"strings"
-	"time"
 
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/probe"
@@ -129,17 +128,6 @@ func declarationText(values *declarationValues, expression ast.Expr) (string, bo
 	return value.ExactString(), true
 }
 
-func declarationDuration(values *declarationValues, expression ast.Expr) (string, bool) {
-	fields := declarationFields(values.literal(expression))
-	value := values.scalar(fields["Duration"])
-	if value != nil && value.Kind() == constant.Int {
-		if nanos, ok := constant.Int64Val(value); ok {
-			return time.Duration(nanos).String(), true
-		}
-	}
-	return "", false
-}
-
 func declarationUsages(values *declarationValues, expression ast.Expr) (string, bool) {
 	literal := values.literal(expression)
 	if literal == nil {
@@ -181,30 +169,16 @@ func addDeclarationParameter(component *cdx.Component, evidence *inventory.Evide
 
 func certificateConfiguration(result *inventory.Result, literal *ast.CompositeLit, values *declarationValues, evidence inventory.Evidence, parent, provider string) {
 	fields := declarationFields(literal)
-	candidate := *values
-	candidate.declared = true
 	certificate := operation("cert-manager Certificate configuration", cdx.CryptoAssetTypeCertificate)
 	certificate.CryptoProperties.CertificateProperties = &cdx.CertificateProperties{CertificateFormat: "X.509"}
 	for _, field := range []struct {
 		goName, property string
 		format           func(*declarationValues, ast.Expr) (string, bool)
 	}{
-		{"SecretName", "secret-name", declarationText}, {"CommonName", "common-name", declarationText},
-		{"IsCA", "is-ca", declarationText}, {"Duration", "duration", declarationDuration},
-		{"RenewBefore", "renew-before", declarationDuration}, {"Usages", "usages", declarationUsages},
+		{"IsCA", "is-ca", declarationText}, {"Usages", "usages", declarationUsages},
 	} {
 		expression := fields[field.goName]
 		addDeclarationParameter(&certificate, &evidence, values, "cert-manager."+field.property, expression, expression, field.format)
-	}
-	issuerLiteral, candidateIssuerLiteral := values.literal(fields["IssuerRef"]), candidate.literal(fields["IssuerRef"])
-	issuer, candidateIssuer := declarationFields(issuerLiteral), declarationFields(candidateIssuerLiteral)
-	if fields["IssuerRef"] != nil && issuerLiteral == nil && candidateIssuerLiteral == nil {
-		evidence.Unresolved = append(evidence.Unresolved, "cert-manager.issuer")
-	}
-	for _, field := range []struct{ goName, property string }{
-		{"Name", "cert-manager.issuer.name"}, {"Kind", "cert-manager.issuer.kind"}, {"Group", "cert-manager.issuer.group"},
-	} {
-		addDeclarationParameter(&certificate, &evidence, values, field.property, issuer[field.goName], candidateIssuer[field.goName], declarationText)
 	}
 	if privateKey := fields["PrivateKey"]; privateKey != nil {
 		keyEvidence := evidence

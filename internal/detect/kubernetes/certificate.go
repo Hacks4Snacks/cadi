@@ -13,35 +13,13 @@ func (r resource) certificate(spec *yaml.Node) error {
 		return err
 	}
 	attributes, unresolved, err := r.parameters(spec, []parameter{
-		{"secretName", "cert-manager.secret-name", textValue},
-		{"commonName", "cert-manager.common-name", textValue},
 		{"isCA", "cert-manager.is-ca", boolValue},
-		{"duration", "cert-manager.duration", durationValue},
-		{"renewBefore", "cert-manager.renew-before", durationValue},
 		{"usages", "cert-manager.usages", stringsValue},
-		{"dnsNames", "cert-manager.dns-names", stringsValue},
 	})
 	if err != nil {
 		return err
 	}
 	object := fields(spec)
-	issuer := object["issuerRef"]
-	if err := r.mapping(issuer, "Certificate issuerRef"); err != nil {
-		return err
-	}
-	issuerValues, issuerUnknown, err := r.parameters(issuer, []parameter{
-		{"name", "cert-manager.issuer.name", textValue},
-		{"kind", "cert-manager.issuer.kind", textValue},
-		{"group", "cert-manager.issuer.group", textValue},
-	})
-	if err != nil {
-		return err
-	}
-	attributes = append(attributes, issuerValues...)
-	unresolved = append(unresolved, issuerUnknown...)
-	if issuer != nil && issuer.Tag == "!!null" {
-		unresolved = append(unresolved, "cert-manager.issuer")
-	}
 	keyRef := ""
 	key := object["privateKey"]
 	if key != nil {

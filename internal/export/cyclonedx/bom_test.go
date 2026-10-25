@@ -154,6 +154,9 @@ func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testin
 			if object["location"] != nil || object["line"] != nil {
 				t.Fatal("native location duplicated in supplemental provenance")
 			}
+			if object["unresolved"] != nil {
+				t.Fatal("internal unresolved metadata was exported")
+			}
 			if record.Occurrence == "" {
 				foundLocationFree = component.Name == "location-free algorithm" && component.Evidence == nil &&
 					record.Kind == "present" && record.Collector == "binary" && record.Symbol == "public-symbol"
@@ -165,16 +168,15 @@ func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testin
 			switch record.Kind {
 			case "configured":
 				foundConfigured = true
-				if !reflect.DeepEqual(record.Unresolved, []string{"iv-size-bits"}) ||
-					len(record.Parameters) != 1 || len(record.Parameters[0].Values) != 2 ||
+				if len(record.Parameters) != 1 || len(record.Parameters[0].Values) != 2 ||
 					record.Parameters[0].Values[0].Value != "2048" ||
 					strings.Count(property.Value, "other constructions are possible") != 1 {
 					t.Fatalf("parameter grouping, ordering, or declared-value handling failed: %+v", record)
 				}
 			case "observed":
 				foundObserved = true
-				if record.Time != observed.Time || !reflect.DeepEqual(record.Unresolved, []string{"key-size-bits"}) {
-					t.Fatal("another occurrence's declaration hid an unresolved observation")
+				if record.Time != observed.Time {
+					t.Fatal("another occurrence's declaration hid the observation time")
 				}
 			}
 		}
@@ -374,7 +376,6 @@ func TestSingleDetailedEvidenceDoesNotFlatten(t *testing.T) {
 	}{
 		{"time", inventory.Evidence{Kind: "observed", Collector: "tls", Location: "localhost:443", Time: "2026-10-25T00:00:00Z"}},
 		{"context", inventory.Evidence{Kind: "configured", Collector: "kubernetes", Location: "config.yaml", Context: &inventory.SourceContext{Document: 1, Field: "/spec"}}},
-		{"unresolved", inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go", Unresolved: []string{"key-size-bits"}}},
 		{"declaration", inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go", Parameters: []inventory.ParameterEvidence{
 			{Name: "key-size-bits", Value: "4096", Location: "policy.go", Line: 8, Basis: "declared", Limitation: "mutable policy"},
 		}}},
@@ -405,6 +406,94 @@ func TestSingleDetailedEvidenceDoesNotFlatten(t *testing.T) {
 				t.Fatalf("detailed records=%d; want 1", records)
 			}
 		})
+	}
+}
+
+func TestUnresolvedOnlyEvidenceBecomesFlatWithoutChangingAnalysis(t *testing.T) {
+	evidence := inventory.Evidence{Kind: "configured", Collector: "go", Location: "storage/strgmgmt.go", Line: 76,
+		Symbol: "certmanager.CertificatePrivateKey", Unresolved: []string{"cert-manager.rotation-policy"}}
+	component := inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE)
+	component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = "2048"
+	var result inventory.Result
+	result.Add(component, evidence, "")
+	for _, full := range []bool{false, true} {
+		bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{IncludeDependencies: full})
+		asset := (*bom.Components)[0]
+		properties := map[string]string{}
+		for _, property := range *asset.Properties {
+			properties[property.Name] = property.Value
+		}
+		if len(properties) != 2 || properties["ciphertrail:evidence-kind"] != "configured" || properties["ciphertrail:collector"] != "go" {
+			t.Fatalf("unresolved-only evidence was not omitted/flattened: %v", properties)
+		}
+	}
+	if !reflect.DeepEqual(evidence.Unresolved, []string{"cert-manager.rotation-policy"}) ||
+		!reflect.DeepEqual(result.Entries[0].Evidence.Unresolved, evidence.Unresolved) {
+		t.Fatal("output cleanup modified internal analysis uncertainty")
+	}
+}
+
+func TestUnresolvedResourceOnlyContextDoesNotCreateProvenance(t *testing.T) {
+	var result inventory.Result
+	result.Add(inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE), inventory.Evidence{
+		Kind: "configured", Collector: "kubernetes", Location: "manifest.yaml",
+		Context: &inventory.SourceContext{
+			Resource:   &inventory.ResourceIdentity{Kind: "Certificate", Name: "RESOURCE_SENTINEL"},
+			Unresolved: []string{"UNRESOLVED_SENTINEL"},
+			Embedded:   []inventory.EmbeddedContext{{Resource: &inventory.ResourceIdentity{Kind: "Certificate"}, Unresolved: []string{"ignored"}}},
+		},
+	}, "")
+	data, err := Encode([]inventory.Collection{{Result: result}})
+	if err != nil || strings.Contains(string(data), "ciphertrail:provenance") ||
+		strings.Contains(string(data), "SENTINEL") || strings.Contains(string(data), "ignored") {
+		t.Fatalf("empty projected context was retained: %v", err)
+	}
+}
+
+func TestContextProjectionKeepsLocatorsNotResourceMetadata(t *testing.T) {
+	context := &inventory.SourceContext{Document: 2, Field: "/data/config", RenderedFrom: "chart/templates/config.yaml",
+		ContentLine: 8, Resource: &inventory.ResourceIdentity{APIVersion: "v1", Kind: "ConfigMap", Name: "RESOURCE_SENTINEL"},
+		Unresolved: []string{"UNRESOLVED_SENTINEL"},
+		Embedded: []inventory.EmbeddedContext{
+			{Document: 1, Field: "/spec", File: "/etc/example.yaml", Line: 3,
+				Resource:   &inventory.ResourceIdentity{Kind: "Certificate", Name: "RESOURCE_SENTINEL"},
+				Unresolved: []string{"UNRESOLVED_SENTINEL"}},
+		}}
+	before, err := json.Marshal(context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result inventory.Result
+	result.Add(inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE),
+		inventory.Evidence{Kind: "configured", Collector: "kubernetes", Location: "manifest.yaml", Line: 20, Context: context}, "")
+	data, err := Encode([]inventory.Collection{{Result: result}})
+	if err != nil || strings.Contains(string(data), "RESOURCE_SENTINEL") || strings.Contains(string(data), "UNRESOLVED_SENTINEL") {
+		t.Fatalf("resource or unresolved metadata leaked into CBOM: %v", err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, property := range *(*bom.Components)[0].Properties {
+		if property.Name != "ciphertrail:provenance" {
+			continue
+		}
+		var record provenance
+		if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+			t.Fatal(err)
+		}
+		found = record.Context != nil && record.Context.Document == 2 && record.Context.Field == "/data/config" &&
+			record.Context.RenderedFrom == "chart/templates/config.yaml" && record.Context.ContentLine == 8 &&
+			len(record.Context.Embedded) == 1 && record.Context.Embedded[0].File == "/etc/example.yaml" &&
+			record.Context.Embedded[0].Line == 3 && record.Context.Resource == nil && record.Context.Embedded[0].Resource == nil
+	}
+	if !found {
+		t.Fatal("source locator context was lost with resource metadata")
+	}
+	after, err := json.Marshal(context)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("export projection modified collector-owned context")
 	}
 }
 
@@ -463,7 +552,7 @@ func TestStructuredFieldsKeepDistinctOccurrencesAtTheSameSourceLine(t *testing.T
 		if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
 			t.Fatal(err)
 		}
-		if !refs[record.Occurrence] || record.Context == nil || record.Context.Resource.Name != "shared" {
+		if !refs[record.Occurrence] || record.Context == nil || record.Context.Document != 1 || record.Context.Resource != nil {
 			t.Fatal("structured context lost its occurrence association")
 		}
 		fields[record.Context.Field] = true

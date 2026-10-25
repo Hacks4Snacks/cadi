@@ -28,6 +28,11 @@ type target struct {
 	duplicates int
 }
 
+type pythonGroup struct {
+	selection scope.Selection
+	inputs    int
+}
+
 func (o Options) prepare(ctx context.Context, output string, selected []string) (Plan, error) {
 	var plan Plan
 	paths := slices.Clone(o.Paths)
@@ -63,11 +68,21 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 		if item.selection.Directory || len(item.selection.Files) == 0 {
 			continue
 		}
+		fileRoot := item.selection.Root
 		for _, parent := range targets {
 			if !parent.selection.Directory || !insidePath(parent.selection.Root, item.selection.Target) {
 				continue
 			}
 			item.selection.Root = parent.selection.Root
+			for _, omission := range parent.selection.Omissions {
+				boundary := filepath.Join(parent.selection.Root, filepath.FromSlash(omission.Path))
+				if omission.Reason == "nested-repository" && insidePath(boundary, item.selection.Target) {
+					// Hard exclusions still apply, but project analysis must not
+					// share mutation facts across a nested repository boundary.
+					item.selection.Root = fileRoot
+					break
+				}
+			}
 			if scope.PathExcluded(parent.selection.Root, item.selection.Target, parent.selection.Exclusions) {
 				item.selection.Files = nil
 				item.selection.Omissions = append(item.selection.Omissions, scope.Omission{Path: relativePath(parent.selection.Root, item.selection.Target), Reason: "excluded"})
@@ -125,6 +140,22 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 			targets[index].selection.Modules = append(targets[index].selection.Modules, module)
 		}
 	}
+	pythonGroups := map[string]*pythonGroup{}
+	if slices.Contains(selected, "python") {
+		for _, item := range targets {
+			if len(pyscan.Files(item.selection.Files)) == 0 {
+				continue
+			}
+			root := item.selection.Root
+			group := pythonGroups[root]
+			if group == nil {
+				group = &pythonGroup{selection: scope.Selection{Root: root, Target: root}}
+				pythonGroups[root] = group
+			}
+			group.selection.Files = append(group.selection.Files, item.selection.Files...)
+			group.inputs++
+		}
+	}
 	for _, item := range targets {
 		selection := item.selection
 		slices.Sort(selection.Modules)
@@ -159,7 +190,13 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 		}
 		fileSelection := selection
 		if slices.Contains(selected, "python") {
-			if item.duplicates > 0 && len(selection.Files) == 0 {
+			group := pythonGroups[selection.Root]
+			if group != nil && group.inputs > 1 && len(pyscan.Files(selection.Files)) > 0 {
+				metadata.Metadata("python-analysis-target", selection.Root)
+				metadata.Coverage = append(metadata.Coverage, inventory.Coverage{
+					Analyzer: "python", Status: "deduplicated", Reason: "shared Python analysis at " + selection.Root,
+				})
+			} else if item.duplicates > 0 && len(selection.Files) == 0 {
 				metadata.Coverage = append(metadata.Coverage, inventory.Coverage{Analyzer: "python", Status: "deduplicated", Reason: "covered by another input"})
 			} else {
 				collectors = append(collectors, pyscan.Source{Selection: selection})
@@ -194,6 +231,18 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 		}
 		plan.Requests = append(plan.Requests, Request{Name: name, Target: selection.Target,
 			Collector: composed{metadata: metadata, collectors: collectors, initialError: item.err}})
+	}
+	var pythonRoots []string
+	for root, group := range pythonGroups {
+		if group.inputs > 1 {
+			pythonRoots = append(pythonRoots, root)
+		}
+	}
+	slices.Sort(pythonRoots)
+	for _, root := range pythonRoots {
+		plan.Requests = append(plan.Requests, Request{
+			Name: "python", Target: root, Collector: pyscan.Source{Selection: pythonGroups[root].selection},
+		})
 	}
 	plan.Requests = append(plan.Requests, o.additionalRequests(selected)...)
 	plan.Inputs = append(plan.Inputs, o.Images...)

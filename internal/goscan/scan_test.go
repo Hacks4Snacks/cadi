@@ -38,6 +38,91 @@ func fixture(t *testing.T, source string) string {
 	return directory
 }
 
+func TestGoSourceFunctionEnumeration(t *testing.T) {
+	const source = `package example
+import "crypto/sha256"
+var Global = sha256.Sum256(nil)
+var GlobalClosure = func() { _ = sha256.Sum256(nil) }
+func init() { _ = sha256.Sum256(nil) }
+func init() { _ = sha256.Sum256(nil) }
+func _() { _ = sha256.Sum256(nil) }
+func Named() { _ = sha256.Sum256(nil) }
+func Closure() func() { return func() { _ = sha256.Sum256(nil) } }
+func Nested() func() func() { return func() func() { return func() { _ = sha256.Sum256(nil) } } }
+func Generic[T any](value T) { _ = sha256.Sum256(nil) }
+type hasher struct{}
+func New() hasher { return hasher{} }
+func (hasher) Sum(data []byte) [32]byte { return sha256.Sum256(data) }
+func (*hasher) private() { _ = sha256.Sum256(nil) }
+type Alias = hasher
+func (*Alias) ThroughAlias() { _ = sha256.Sum256(nil) }
+type Public struct{}
+func (Public) Sum() { _ = sha256.Sum256(nil) }
+func (*Public) private() { _ = sha256.Sum256(nil) }
+type GenericHasher[T any] struct{}
+func (GenericHasher[T]) Sum(data []byte) [32]byte { return sha256.Sum256(data) }
+func (*GenericHasher[T]) private() { _ = sha256.Sum256(nil) }
+type hiddenGeneric[T any] struct{}
+func (hiddenGeneric[T]) Sum() { _ = sha256.Sum256(nil) }
+`
+	const consumer = `package example
+func Consumer() {
+ New().Sum(nil)
+ GenericHasher[int]{}.Sum(nil)
+ GenericHasher[string]{}.Sum(nil)
+ new(GenericHasher[int]).private()
+ new(hasher).ThroughAlias()
+ hiddenGeneric[int]{}.Sum()
+ Generic(1)
+ Generic("value")
+ Closure()()
+ Nested()()()
+}
+`
+	var expectedLines []int
+	for index, line := range strings.Split(source, "\n") {
+		if strings.Contains(line, "sha256.Sum256") {
+			expectedLines = append(expectedLines, index+1)
+		}
+	}
+	for _, withConsumer := range []bool{false, true} {
+		t.Run(map[bool]string{false: "library", true: "local-consumer"}[withConsumer], func(t *testing.T) {
+			directory := fixture(t, source)
+			if withConsumer {
+				if err := os.WriteFile(filepath.Join(directory, "consumer.go"), []byte(consumer), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err := (Source{Path: directory, Offline: true}).Collect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lines []int
+			for _, entry := range result.Entries {
+				if entry.Component.CryptoProperties == nil {
+					continue
+				}
+				if entry.Component.Name != "SHA-256" || entry.Evidence.Location != "main.go" ||
+					entry.Evidence.Kind != "configured" || !strings.Contains(entry.Evidence.Symbol, "crypto/sha256.Sum256") ||
+					entry.Parent == "" {
+					t.Fatalf("incorrect source ownership or evidence: %+v", entry)
+				}
+				lines = append(lines, entry.Evidence.Line)
+			}
+			slices.Sort(lines)
+			if !slices.Equal(lines, expectedLines) {
+				t.Errorf("crypto call-site lines = %v; want exactly once at %v", lines, expectedLines)
+			}
+			if len(result.Diagnostics) != 0 {
+				t.Errorf("unexpected diagnostics: %+v", result.Diagnostics)
+			}
+			if _, err := cyclonedx.Encode([]inventory.Collection{{Collector: "go", Result: result}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestGoRSAUsesNativeFieldsInBothOutputScopes(t *testing.T) {
 	directory := fixture(t, `package example
 import ("crypto/rand"; "crypto/rsa")
@@ -480,13 +565,13 @@ func Build(issuer, secret string) cm.Certificate {
 		for _, property := range *entry.Component.Properties {
 			properties[property.Name] = property.Value
 		}
-		if properties["ciphertrail:cert-manager.duration"] != "720h0m0s" ||
-			properties["ciphertrail:cert-manager.renew-before"] != "240h0m0s" ||
-			properties["ciphertrail:cert-manager.issuer.name"] != "" ||
-			!slices.Contains(entry.Evidence.Unresolved, "cert-manager.issuer.name") ||
-			properties["ciphertrail:cert-manager.issuer.kind"] != "Issuer" ||
-			!strings.Contains(properties["ciphertrail:cert-manager.usages"], "server auth") {
+		if !strings.Contains(properties["ciphertrail:cert-manager.usages"], "server auth") {
 			t.Fatalf("incorrect or guessed declaration settings: %v", properties)
+		}
+		for _, field := range []string{"duration", "renew-before", "issuer.name", "issuer.kind", "issuer.group", "secret-name", "common-name"} {
+			if _, exists := properties["ciphertrail:cert-manager."+field]; exists {
+				t.Fatalf("deployment-only field was retained: %s", field)
+			}
 		}
 		key := components[(*p.RelatedCryptographicAssets)[0].Ref].CryptoProperties.RelatedCryptoMaterialProperties
 		if key == nil || key.Type != cdx.RelatedCryptoMaterialTypePrivateKey || key.Size == nil || *key.Size != 2048 || key.Value != "" {
@@ -686,16 +771,13 @@ func TLS(version uint16) *tls.Config { return &tls.Config{MinVersion:version,Ins
 			}
 		}
 		if entry.Component.Name == "cert-manager Certificate configuration" {
-			if len(entry.Evidence.Parameters) != 0 {
+			if _, hasCASetting := p["ciphertrail:cert-manager.is-ca"]; hasCASetting {
 				configured = true
-				if p["ciphertrail:cert-manager.duration:declared"] != "720h0m0s" ||
-					p["ciphertrail:cert-manager.is-ca"] != "false" ||
-					p["ciphertrail:cert-manager.issuer.name"] != "unknown" ||
-					!slices.Contains(entry.Evidence.Unresolved, "cert-manager.common-name") ||
-					!slices.Contains(entry.Evidence.Unresolved, "cert-manager.secret-name") {
-					t.Fatalf("known or unresolved declaration values changed: %+v %v", entry.Evidence, p)
+				if p["ciphertrail:cert-manager.is-ca"] != "false" ||
+					len(entry.Evidence.Parameters) != 0 || len(entry.Evidence.Unresolved) != 0 {
+					t.Fatalf("crypto settings changed or ignored spec details were still analyzed: %+v %v", entry.Evidence, p)
 				}
-				for _, name := range []string{"duration", "renew-before", "issuer.group", "common-name", "secret-name", "usages"} {
+				for _, name := range []string{"duration", "duration:declared", "renew-before", "issuer.name", "issuer.kind", "issuer.group", "common-name", "secret-name", "usages"} {
 					if _, exists := p["ciphertrail:cert-manager."+name]; exists {
 						t.Fatalf("absent or unresolved value placeholder retained: %s", name)
 					}
@@ -866,8 +948,8 @@ func CopyDuration() cm.Duration { return *Duration }
 			}
 		}
 	}
-	if !keyFound || !durationFound || !rotationFound {
-		t.Fatalf("unresolved declared settings: key=%v duration=%v rotation=%v", keyFound, durationFound, rotationFound)
+	if !keyFound || durationFound || !rotationFound {
+		t.Fatalf("crypto policy facts or omitted spec scope changed: key=%v duration=%v rotation=%v", keyFound, durationFound, rotationFound)
 	}
 	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
@@ -969,8 +1051,8 @@ func MutateCopy() { copy := CopyKey(); copy.Size = 384 }
 			}
 		}
 	}
-	if !keyFound || !durationFound || !usageFound {
-		t.Fatalf("private immutable getters did not resolve: key=%v duration=%v usage=%v", keyFound, durationFound, usageFound)
+	if !keyFound || durationFound || !usageFound {
+		t.Fatalf("retained or omitted policy settings incorrect: key=%v duration=%v usage=%v", keyFound, durationFound, usageFound)
 	}
 }
 

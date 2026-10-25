@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
 	"os"
@@ -311,21 +312,12 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 	if err := reportLoadProblems(&result, relative(root, directory), loadErrors); err != nil {
 		return result, err
 	}
-	program, initial := ssautil.Packages(loaded, ssa.InstantiateGenerics)
+	program, _ := ssautil.Packages(loaded, ssa.InstantiateGenerics)
 	program.Build()
-	own := map[*ssa.Package]bool{}
-	for _, pkg := range initial {
-		if pkg != nil {
-			own[pkg] = true
-		}
+	functions, err := sourceFunctions(program, loaded)
+	if err != nil {
+		return result, err
 	}
-	var functions []*ssa.Function
-	for function := range ssautil.AllFunctions(program) {
-		if own[function.Pkg] && len(function.Blocks) > 0 {
-			functions = append(functions, function)
-		}
-	}
-	slices.SortFunc(functions, func(a, b *ssa.Function) int { return int(a.Pos()) - int(b.Pos()) })
 	project := newDeclarationProject(root, loaded, exclusions)
 	values := newValues(functions, project)
 	for _, function := range functions {
@@ -366,6 +358,47 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 		scanCryptoDeclarations(&result, root, pkg, parents[pkg.PkgPath], parents, exclusions, project)
 	}
 	return result, ctx.Err()
+}
+
+func sourceFunctions(program *ssa.Program, loaded []*packages.Package) ([]*ssa.Function, error) {
+	var functions []*ssa.Function
+	var add func(*ssa.Function)
+	add = func(function *ssa.Function) {
+		if len(function.Blocks) > 0 {
+			functions = append(functions, function)
+		}
+		for _, anonymous := range function.AnonFuncs {
+			add(anonymous)
+		}
+	}
+	for _, pkg := range loaded {
+		ssaPackage := program.Package(pkg.Types)
+		if ssaPackage == nil || ssaPackage.Func("init") == nil {
+			return nil, fmt.Errorf("missing SSA initializer for selected package %s", pkg.PkgPath)
+		}
+		add(ssaPackage.Func("init"))
+		// Source declarations include unreferenced and generic methods that
+		// reachability-based enumeration omits. Instantiations share these sites.
+		for _, file := range pkg.Syntax {
+			for _, declaration := range file.Decls {
+				declaration, ok := declaration.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				object, ok := pkg.TypesInfo.Defs[declaration.Name].(*types.Func)
+				if !ok {
+					return nil, fmt.Errorf("missing function type for %s.%s", pkg.PkgPath, declaration.Name.Name)
+				}
+				function := program.FuncValue(object)
+				if function == nil {
+					return nil, fmt.Errorf("missing SSA function for %s.%s", pkg.PkgPath, declaration.Name.Name)
+				}
+				add(function)
+			}
+		}
+	}
+	slices.SortFunc(functions, func(a, b *ssa.Function) int { return int(a.Pos()) - int(b.Pos()) })
+	return functions, nil
 }
 
 type loadProblem struct {

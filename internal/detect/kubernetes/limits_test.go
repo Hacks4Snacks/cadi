@@ -19,7 +19,7 @@ func TestManifestLimitsDoNotLeakParserInput(t *testing.T) {
 		{"duplicate-key", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: {secretName: PRIVATE_SENTINEL, secretName: duplicate}\n"},
 		{"alias", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: {secretName: &private PRIVATE_SENTINEL, commonName: *private}\n"},
 		{"invalid-yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: [PRIVATE_SENTINEL: [\n"},
-		{"wrong-field-type", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: {duration: {PRIVATE_SENTINEL: invalid}}\n"},
+		{"wrong-field-type", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: {isCA: {PRIVATE_SENTINEL: invalid}}\n"},
 		{"invalid-base64", "apiVersion: v1\nkind: Secret\nmetadata: {name: public}\ntype: kubernetes.io/tls\ndata: {tls.crt: 'PRIVATE_SENTINEL!'}\n"},
 		{"invalid-material", "apiVersion: v1\nkind: Secret\nmetadata: {name: public}\ntype: kubernetes.io/tls\nstringData: {tls.crt: PRIVATE_SENTINEL}\n"},
 	} {
@@ -113,8 +113,8 @@ func TestLiteralTemplateTextOutsideSupportedFieldsDoesNotHideResources(t *testin
 		for _, name := range entry.Evidence.Unresolved {
 			unresolved = unresolved || name == "cert-manager.common-name"
 		}
-		if !unresolved {
-			t.Fatal("templated field was reported as a resolved literal")
+		if unresolved {
+			t.Fatal("ignored deployment detail was still analyzed")
 		}
 	}
 	if !found {
@@ -162,12 +162,13 @@ apiVersion: cert-manager.io/v1
 kind: CertificateList
 items:
   - metadata: {name: another}
-    spec: {commonName: "unknown", isCA: false, privateKey: {algorithm: RSA, size: 0}}
+    spec: {commonName: "unknown", isCA: false, privateKey: {algorithm: RSA, size: 0, encoding: "unknown"}}
 `)
 	if err != nil || len(result.Diagnostics) != 1 {
 		t.Fatalf("mixed documents failed: %v %+v", err, result.Diagnostics)
 	}
 	documents := map[int]bool{}
+	literalEncoding := false
 	for _, entry := range result.Entries {
 		if entry.Component.Name == "cert-manager Certificate configuration" {
 			documents[entry.Evidence.Context.Document] = true
@@ -179,13 +180,18 @@ items:
 				for _, p := range *entry.Component.Properties {
 					properties[p.Name] = p.Value
 				}
-				if properties["ciphertrail:cert-manager.common-name"] != "unknown" || properties["ciphertrail:cert-manager.is-ca"] != "false" {
-					t.Fatal("literal unknown/false values were discarded")
+				if properties["ciphertrail:cert-manager.common-name"] != "" || properties["ciphertrail:cert-manager.is-ca"] != "false" {
+					t.Fatal("omitted identity or retained CA setting changed")
 				}
 			}
 		}
+		if entry.Component.Name == "cert-manager Private key configuration" && entry.Evidence.Context.Document == 3 {
+			for _, property := range *entry.Component.Properties {
+				literalEncoding = literalEncoding || property.Name == "ciphertrail:cert-manager.key-encoding" && property.Value == "unknown"
+			}
+		}
 	}
-	if len(documents) != 2 || !documents[1] || !documents[3] {
+	if len(documents) != 2 || !documents[1] || !documents[3] || !literalEncoding {
 		t.Fatal("one unrendered document suppressed other configured resources")
 	}
 }

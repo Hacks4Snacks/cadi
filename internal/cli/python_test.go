@@ -62,6 +62,244 @@ func TestPythonMixedRepositorySelectionAndOverlap(t *testing.T) {
 	}
 }
 
+func TestPythonSelectionsShareMutationFacts(t *testing.T) {
+	for _, test := range []struct {
+		name, app, patch string
+		hmac             bool
+	}{
+		{
+			name: "parameter",
+			app: "import secrets\nimport hmac\nimport patch\n" +
+				"hmac.new(secrets.token_bytes(32), b'message', digestmod='sha256')\n",
+			patch: "import secrets\nsecrets.token_bytes = lambda n: b'x' * 16\n",
+			hmac:  true,
+		},
+		{
+			name: "constructor",
+			app: "import requests\nimport patch\n" +
+				"session = requests.Session()\nsession.get('https://example.test')\n",
+			patch: "import requests\nrequests.Session = custom\n",
+		},
+		{
+			name: "method",
+			app: "import requests\nimport patch\n" +
+				"session = requests.Session()\nsession.get('https://example.test')\n",
+			patch: "import requests\nrequests.Session.get = custom\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeRepositoryFile(t, root, "app.py", test.app)
+			writeRepositoryFile(t, root, "patch.py", test.patch)
+			app, patch := filepath.Join(root, "app.py"), filepath.Join(root, "patch.py")
+			for _, selection := range []struct {
+				name  string
+				paths []string
+			}{
+				{"directory", []string{root}},
+				{"explicit-files", []string{app, patch}},
+				{"reversed-files", []string{patch, app}},
+				{"overlap", []string{root, app, patch}},
+			} {
+				t.Run(selection.name, func(t *testing.T) {
+					args := append([]string{"scan", "--analyzers", "python", "--offline"}, selection.paths...)
+					var stdout, stderr bytes.Buffer
+					if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
+						t.Fatalf("scan failed: %d %s", code, stderr.String())
+					}
+					var bom cdx.BOM
+					if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+						t.Fatal(err)
+					}
+					findings := 0
+					for _, component := range *bom.Components {
+						if component.Type != cdx.ComponentTypeCryptographicAsset {
+							continue
+						}
+						findings++
+						if !test.hmac || component.Name != "HMAC-SHA-256" {
+							t.Errorf("mutated API produced a finding: %s", component.Name)
+							continue
+						}
+						if component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+							t.Error("mutated byte factory established an unconditional HMAC key size")
+						}
+						if component.Evidence == nil || component.Evidence.Occurrences == nil ||
+							len(*component.Evidence.Occurrences) != 1 ||
+							filepath.Base((*component.Evidence.Occurrences)[0].Location) != "app.py" {
+							t.Error("source occurrence missing or duplicated")
+						}
+					}
+					want := 0
+					if test.hmac {
+						want = 1
+					}
+					if findings != want {
+						t.Errorf("crypto findings = %d; want %d", findings, want)
+					}
+					files, diagnostics := 0, 0
+					targets := map[string]bool{}
+					for _, property := range *bom.Metadata.Properties {
+						if property.Name != "ciphertrail:collection" {
+							continue
+						}
+						var collection struct {
+							Target      string
+							Coverage    []inventory.Coverage
+							Diagnostics []inventory.Diagnostic
+						}
+						if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
+							t.Fatal(err)
+						}
+						targets[collection.Target] = true
+						diagnostics += len(collection.Diagnostics)
+						for _, coverage := range collection.Coverage {
+							if coverage.Analyzer == "python" {
+								files += coverage.Files
+							}
+						}
+					}
+					if files != 2 || diagnostics == 0 {
+						t.Errorf("work repeated or mutation diagnostics lost: files=%d diagnostics=%d", files, diagnostics)
+					}
+					for _, path := range selection.paths {
+						resolved, err := filepath.EvalSymlinks(path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !targets[resolved] {
+							t.Errorf("requested input lost its collection context: %s", path)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPythonSelectionsKeepIndependentScopes(t *testing.T) {
+	root := t.TempDir()
+	writeRepositoryFile(t, root, "app.py", "import secrets\nimport hmac\nhmac.new(secrets.token_bytes(32), b'message', digestmod='sha256')\n")
+	writeRepositoryFile(t, root, "helper.py", "pass\n")
+	writeRepositoryFile(t, root, "nested/.git", "gitdir: unused\n")
+	writeRepositoryFile(t, root, "nested/patch.py", "import secrets\nsecrets.token_bytes = custom\n")
+	writeRepositoryFile(t, root, "nested/helper.py", "pass\n")
+	nested := filepath.Join(root, "nested")
+	for _, selection := range []struct {
+		name  string
+		paths []string
+	}{
+		{"repositories", []string{root, nested}},
+		{"explicit-files", []string{filepath.Join(root, "app.py"), filepath.Join(root, "helper.py"), filepath.Join(nested, "patch.py"), filepath.Join(nested, "helper.py")}},
+		{"repository-and-nested-files", []string{root, filepath.Join(nested, "patch.py"), filepath.Join(nested, "helper.py")}},
+		{"overlap", []string{root, nested, filepath.Join(nested, "patch.py")}},
+	} {
+		t.Run(selection.name, func(t *testing.T) {
+			args := append([]string{"scan", "--analyzers", "python", "--offline"}, selection.paths...)
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
+				t.Fatalf("scan failed: %d %s", code, stderr.String())
+			}
+			var bom cdx.BOM
+			if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+				t.Fatal(err)
+			}
+			hmac := 0
+			for _, component := range *bom.Components {
+				if component.Name == "HMAC-SHA-256" {
+					hmac++
+					if component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "256" {
+						t.Error("a separate repository's mutation invalidated the local key size")
+					}
+				}
+			}
+			if hmac != 1 {
+				t.Fatalf("HMAC findings = %d; want 1", hmac)
+			}
+		})
+	}
+}
+
+func TestPythonSharedAnalysisHonorsExplicitFilesAndExclusions(t *testing.T) {
+	for _, excluded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "explicit-test-file", true: "hard-exclusion"}[excluded], func(t *testing.T) {
+			root := t.TempDir()
+			writeRepositoryFile(t, root, "app.py", "import secrets\nimport hmac\nhmac.new(secrets.token_bytes(32), b'message', digestmod='sha256')\n")
+			writeRepositoryFile(t, root, "tests/patch.py", "import secrets\nsecrets.token_bytes = custom\n")
+			if excluded {
+				writeRepositoryFile(t, root, ".ciphertrailignore", "tests/\n")
+			}
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), []string{"scan", root, filepath.Join(root, "tests/patch.py"),
+				"--analyzers", "python", "--offline"}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("scan failed: %d %s", code, stderr.String())
+			}
+			var bom cdx.BOM
+			if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, component := range *bom.Components {
+				if component.Name != "HMAC-SHA-256" {
+					continue
+				}
+				found = true
+				size := component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier
+				if excluded && size != "256" || !excluded && size != "" {
+					t.Errorf("selection did not preserve mutation scope: key size=%q", size)
+				}
+			}
+			if !found {
+				t.Fatal("HMAC finding lost")
+			}
+		})
+	}
+}
+
+func TestPythonSharedAnalysisPreservesPartialFailures(t *testing.T) {
+	root := t.TempDir()
+	writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'PRIVATE_INPUT')\n")
+	writeRepositoryFile(t, root, "broken.py", "def broken(\n")
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"scan", filepath.Join(root, "app.py"), filepath.Join(root, "broken.py"),
+		"--analyzers", "python", "--offline", "--summary"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "INCOMPLETE") {
+		t.Fatalf("shared analysis hid a parser failure: %d %s", code, stderr.String())
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+		t.Fatal(err)
+	}
+	hashes, files, failed := 0, 0, false
+	for _, component := range *bom.Components {
+		if component.Name == "SHA-256" {
+			hashes++
+		}
+	}
+	for _, property := range *bom.Metadata.Properties {
+		if property.Name != "ciphertrail:collection" {
+			continue
+		}
+		var collection struct {
+			Status   string
+			Coverage []inventory.Coverage
+		}
+		if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
+			t.Fatal(err)
+		}
+		for _, coverage := range collection.Coverage {
+			if coverage.Analyzer == "python" {
+				files += coverage.Files
+				failed = failed || coverage.Status == "failed" && collection.Status == "incomplete"
+			}
+		}
+	}
+	if hashes != 1 || files != 2 || !failed || strings.Contains(stdout.String(), "PRIVATE_INPUT") {
+		t.Fatalf("incorrect partial report: hashes=%d files=%d failed=%v", hashes, files, failed)
+	}
+}
+
 func TestExplicitPythonFilesDoNotRequireArtifactFindings(t *testing.T) {
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "app.py", "x = 1\n")
