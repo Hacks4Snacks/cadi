@@ -62,6 +62,10 @@ privacy, detector registration, input parity, output safeguards, and official
 schema validation. A bounded manifest fuzz target also checks that malformed
 inputs retain schema-valid partial inventories.
 
+Go workspace tests that use the shared module fixture inherit the repository's
+`go.mod`. Their `go.work` version must follow that manifest rather than a
+hardcoded version, so Go version updates do not invalidate the test workspace.
+
 ## Release automation
 
 The [release workflow](../.github/workflows/release-please.yml) runs on branch

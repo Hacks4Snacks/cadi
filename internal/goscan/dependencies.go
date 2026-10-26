@@ -168,6 +168,8 @@ func safeGoFailure(message string) string {
 		return "the declared module version is unavailable or access is denied; check the version and private-module credentials"
 	case strings.Contains(lower, "checksum mismatch"), strings.Contains(lower, "security error"):
 		return "dependency checksum verification failed; inspect the module's normal Go download diagnostics"
+	case strings.Contains(lower, "go.work lists go"):
+		return "workspace Go version is older than a member module requires; update go.work with the repository's normal Go workflow"
 	case strings.Contains(lower, "requires go"), strings.Contains(lower, "go version"):
 		return "dependency requires a compatible local Go toolchain; automatic toolchain downloads are disabled"
 	case strings.Contains(lower, "timeout"), strings.Contains(lower, "deadline"):

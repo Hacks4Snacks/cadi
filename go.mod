@@ -14,7 +14,7 @@ require (
 )
 
 require (
-	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	golang.org/x/sync v0.24.0 // indirect

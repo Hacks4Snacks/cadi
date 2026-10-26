@@ -20,6 +20,7 @@ import (
 	"cadi/internal/inventory"
 	"cadi/internal/scope"
 
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -313,6 +314,34 @@ func TestPreparationPreservesPrivateModuleRouting(t *testing.T) {
 	}
 }
 
+func TestGoVersionFailuresDistinguishWorkspacesAndToolchains(t *testing.T) {
+	for _, test := range []struct {
+		name, message, want string
+	}{
+		{
+			"workspace-version",
+			"go: module /PRIVATE_SENTINEL listed in go.work file requires go >= 1.27.3, but go.work lists go 1.27.0; to download and use go 1.27.3:\n\tgo work use",
+			"workspace Go version is older than a member module requires; update go.work with the repository's normal Go workflow",
+		},
+		{
+			"module-toolchain",
+			"go: module example.test/PRIVATE_SENTINEL requires go >= 1.28.0 (running go 1.27.3; GOTOOLCHAIN=local)",
+			"dependency requires a compatible local Go toolchain; automatic toolchain downloads are disabled",
+		},
+		{
+			"workspace-toolchain",
+			"go: go.work requires go >= 1.28.0 (running go 1.27.3; GOTOOLCHAIN=local)",
+			"dependency requires a compatible local Go toolchain; automatic toolchain downloads are disabled",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := safeGoFailure(test.message); got != test.want {
+				t.Fatalf("diagnostic = %q; want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestWorkspaceIsHonoredWithoutModifyingInputs(t *testing.T) {
 	directory := fixture(t, `package example
 import "example.test/nested"
@@ -321,8 +350,19 @@ func Run() { nested.Run() }
 	if err := os.Mkdir(filepath.Join(directory, "nested"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	moduleData, err := os.ReadFile(filepath.Join(directory, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := modfile.Parse("go.mod", moduleData, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if module.Go == nil {
+		t.Fatal("fixture module has no Go version")
+	}
 	files := map[string][]byte{
-		"go.work":        []byte("go 1.27.0\nuse (\n.\n./nested\n)\n"),
+		"go.work":        []byte(fmt.Sprintf("go %s\nuse (\n.\n./nested\n)\n", module.Go.Version)),
 		"nested/go.mod":  []byte("module example.test/nested\n\ngo 1.27.0\n"),
 		"nested/hash.go": []byte("package nested; import \"crypto/sha256\"; func Run() { _ = sha256.Sum256(nil) }\n"),
 	}
