@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scope"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
+	"cadi/internal/scope"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -558,7 +558,7 @@ func TestLoaderCausesDoNotExposeSourceOrCredentials(t *testing.T) {
 
 func TestSourceExclusionsAreLiteralRootRelativePaths(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".ciphertrailignore"), []byte("# comment\n\n./internal/testutil/\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".cadiignore"), []byte("# comment\n\n./internal/testutil/\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	exclusions, err := scope.LoadExclusions(root, []string{"fixtures.go", "internal/testutil"})
@@ -589,10 +589,10 @@ func TestSourceExclusionsAreLiteralRootRelativePaths(t *testing.T) {
 
 func TestInvalidIgnoreFileFailsExplicitly(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".ciphertrailignore"), []byte("../outside\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".cadiignore"), []byte("../outside\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scope.LoadExclusions(root, nil); err == nil || !strings.Contains(err.Error(), ".ciphertrailignore:1") {
+	if _, err := scope.LoadExclusions(root, nil); err == nil || !strings.Contains(err.Error(), ".cadiignore:1") {
 		t.Fatalf("invalid file rule was ignored: %v", err)
 	}
 }
@@ -603,7 +603,7 @@ func TestIgnoreFileCannotBeASymlink(t *testing.T) {
 	if err := os.WriteFile(target, []byte("PRIVATE_SENTINEL"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(root, ".ciphertrailignore")); err != nil {
+	if err := os.Symlink(target, filepath.Join(root, ".cadiignore")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := scope.LoadExclusions(root, nil); err == nil || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
@@ -618,7 +618,7 @@ func TestNestedRepositoryBoundariesAndExplicitInclusion(t *testing.T) {
 		"ordinary/hash.go": "package ordinary\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n",
 		"checkout/go.mod":  "module example.test/checkout\n\ngo 1.27.0\n",
 		"checkout/hash.go": "package checkout\nimport \"crypto/md5\"\nfunc Run() { _ = md5.Sum(nil) }\n",
-		"worktree/.git":    "gitdir: /not/read/by/ciphertrail\n",
+		"worktree/.git":    "gitdir: /not/read/by/cadi\n",
 		"worktree/hash.go": "package worktree\nimport \"crypto/sha1\"\nfunc Run() { _ = sha1.Sum(nil) }\n",
 	}
 	for _, dir := range []string{".git", "checkout/.git", "ordinary", "worktree"} {
@@ -692,8 +692,8 @@ func TestMissingDependencyDoesNotContactProxy(t *testing.T) {
 	defer server.Close()
 	t.Setenv("GOPROXY", server.URL)
 	t.Setenv("GONOPROXY", "*")
-	directory := fixture(t, `package example; import _ "example.invalid/ciphertrail-missing"`)
-	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte("module example.test/offline\n\ngo 1.27.0\nrequire example.invalid/ciphertrail-missing v0.0.1\n"), 0600); err != nil {
+	directory := fixture(t, `package example; import _ "example.invalid/cadi-missing"`)
+	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte("module example.test/offline\n\ngo 1.27.0\nrequire example.invalid/cadi-missing v0.0.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (Source{Path: directory, Offline: true}).Collect(context.Background()); err == nil {

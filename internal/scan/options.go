@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/detect/artifact"
-	"ciphertrail/internal/detect/kubernetes"
-	"ciphertrail/internal/probe"
-	"ciphertrail/internal/scope"
+	"cadi/internal/detect"
+	"cadi/internal/detect/artifact"
+	"cadi/internal/detect/kubernetes"
+	"cadi/internal/probe"
+	"cadi/internal/scope"
 )
 
 // Options separates input locations from passive analyzer selection.

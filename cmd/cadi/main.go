@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"ciphertrail/internal/cli"
+	"cadi/internal/cli"
 )
 
 func main() {

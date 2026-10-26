@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scope"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
+	"cadi/internal/scope"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -62,7 +62,7 @@ AES.new(secrets.token_bytes(32), AES.MODE_GCM, nonce=b"x" * 12)
 		found[entry.Component.Name] = true
 		if entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				if property.Name == "ciphertrail:key-size-bits" &&
+				if property.Name == "cadi:key-size-bits" &&
 					entry.Component.CryptoProperties.AlgorithmProperties != nil &&
 					entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
 					t.Fatal("a native Python algorithm parameter was duplicated as a property")
@@ -171,7 +171,7 @@ requests.post("https://example.invalid/second")
 		providerRef = component.BOMRef
 		qualified := false
 		for _, property := range *component.Properties {
-			qualified = qualified || property.Name == "ciphertrail:scope" &&
+			qualified = qualified || property.Name == "cadi:scope" &&
 				strings.Contains(property.Value, "source import/API namespace") &&
 				strings.Contains(property.Value, "not established")
 		}

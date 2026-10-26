@@ -2,8 +2,8 @@
 
 [Home](../README.md) | [CBOM output](output.md) | [Scan reports](scan-report.md)
 
-Use this guide to build CipherTrail, select inputs, and control discovery scope.
-Commands assume the current directory is the CipherTrail checkout; replace scan
+Use this guide to build CADI, select inputs, and control discovery scope.
+Commands assume the current directory is the CADI checkout; replace scan
 paths with the repositories or files you want to inventory.
 
 ## Build and run
@@ -16,15 +16,15 @@ Docker daemon, database, hosted scanner, or cluster access are needed.
 ```sh
 go mod download
 make build
-./bin/ciphertrail version
-./bin/ciphertrail scan . --output cbom.json
+./bin/cadi version
+./bin/cadi scan . --output cbom.json
 ```
 
 See [development](development.md#build-identity) for release-version stamping.
 
 ## Inputs and analyzers
 
-The canonical command is `ciphertrail scan PATH...`. Directories are mixed
+The canonical command is `cadi scan PATH...`. Directories are mixed
 repository roots; files are explicit passive inputs. Go, Python, Kubernetes,
 and artifact analysis run where applicable and contribute to one CBOM.
 Repositories without Go modules or Python source record `not-applicable` for
@@ -39,10 +39,10 @@ for aggregation and stable-reference behavior.
 Use `--analyzers` to restrict passive analysis:
 
 ```sh
-./bin/ciphertrail scan . --output cbom.json
-./bin/ciphertrail scan . --analyzers go,kubernetes --output cbom.json
-./bin/ciphertrail scan . --analyzers python --output python.cbom.json
-./bin/ciphertrail scan ./rendered.yaml --analyzers kubernetes --offline
+./bin/cadi scan . --output cbom.json
+./bin/cadi scan . --analyzers go,kubernetes --output cbom.json
+./bin/cadi scan . --analyzers python --output python.cbom.json
+./bin/cadi scan ./rendered.yaml --analyzers kubernetes --offline
 ```
 
 The available analyzer names are `go`, `python`, `kubernetes`, and `artifact`.
@@ -64,7 +64,7 @@ that root; it does not treat an isolated `.go` file as a complete project.
 Inputs can be repeated and combined in one report:
 
 ```sh
-./bin/ciphertrail scan \
+./bin/cadi scan \
   ./service \
   ./certificates \
   ./service-binary \
@@ -77,7 +77,7 @@ Flags may appear before or after paths. Use `--` before a path beginning with `-
 Go uses the host build platform unless you select another context:
 
 ```sh
-./bin/ciphertrail scan . --goos linux --goarch amd64 --tags production
+./bin/cadi scan . --goos linux --goarch amd64 --tags production
 ```
 
 Without `--output`, JSON goes to stdout. Coverage summaries, grouped diagnostics,
@@ -98,15 +98,15 @@ boundary are still scanned.
 
 This avoids accidentally inventorying another checkout's examples, test modules,
 and services just because it is stored beneath the selected repository. Skipped
-roots are recorded in `ciphertrail:excluded-nested-repositories`; the effective
-mode is recorded in `ciphertrail:nested-repository-scope` in the scan report.
+roots are recorded in `cadi:excluded-nested-repositories`; the effective
+mode is recorded in `cadi:nested-repository-scope` in the scan report.
 
 To include another repository deliberately, add it as a source root or opt into
 recursive repository discovery:
 
 ```sh
-./bin/ciphertrail scan ./project ./project/other-repository
-./bin/ciphertrail scan ./project --include-nested-repos
+./bin/cadi scan ./project ./project/other-repository
+./bin/cadi scan ./project --include-nested-repos
 ```
 
 Explicit source exclusions still apply in recursive mode. Required imports are
@@ -136,7 +136,7 @@ environments, without reading their configuration or dependencies. An ordinary
 directory named `env` is not excluded just because of its name.
 
 Go also excludes `_test.go` files through its build context. A normal file such
-as `internal/testutil/crypto.go` is still ordinary Go source; CipherTrail does not
+as `internal/testutil/crypto.go` is still ordinary Go source; CADI does not
 guess that it is test-only from its directory name. See
 [Go source scope](go.md#resolution-and-source-scope) for package-selection limits.
 
@@ -144,7 +144,7 @@ Python omits `test_*.py`, `*_test.py`, and `conftest.py` during automatic source
 analysis. An explicitly supplied `.py` file can select a test module, subject to
 the same hard exclusions as other inputs.
 
-Add literal root-relative file or directory paths to `.ciphertrailignore` at
+Add literal root-relative file or directory paths to `.cadiignore` at
 each selected directory root. These rules apply to every passive analyzer:
 
 ```text
@@ -153,14 +153,14 @@ internal/testutil/
 test/fixtures/
 ```
 
-CipherTrail's own `.ciphertrailignore` excludes `internal/testutil/`, so a normal
+CADI's own `.cadiignore` excludes `internal/testutil/`, so a normal
 self-scan omits its disposable certificate/key fixtures. This is separate from
 `.gitignore`: helper code stays in version control and continues to run in tests.
 
 For a one-off scan, use repeatable `--exclude` options:
 
 ```sh
-./bin/ciphertrail scan . \
+./bin/cadi scan . \
   --exclude internal/testutil \
   --exclude test/fixtures \
   --output cbom.json
@@ -174,11 +174,16 @@ segments; `internal/testutil` does not exclude `internal/testutilities` or
 Glob patterns, negation, absolute paths, and parent traversal are rejected rather
 than silently misinterpreted.
 
-Only the `.ciphertrailignore` at each explicit directory root is read; parent and
-nested ignore files are not inherited. Explicit files outside a selected directory
-use their containing directory as the scope root. The ignore file must be regular,
-not a symlink, and no larger than 64 KiB. `.gitignore` is not implicitly treated as
-cryptographic scope.
+The legacy `.ciphertrailignore` remains accepted during the
+[project-name transition](development.md#transition-from-ciphertrail). If both
+files exist, their rules are combined with CLI exclusions; neither overrides the
+other.
+
+Only ignore files at each explicit directory root are read; parent and nested
+ignore files are not inherited. Explicit files outside a selected directory use
+their containing directory as the scope root. Each ignore file must be regular,
+not a symlink, and no larger than 64 KiB. Both names are protected from output
+overwrites. `.gitignore` is not implicitly treated as cryptographic scope.
 
 Excluded packages and nested modules are removed from the scan roots.
 Excluded files do not generate source findings or unmodeled-API notes, including
@@ -201,7 +206,7 @@ checksum files are not modified. Cache-only scans require the selected modules
 and checksums to be available locally:
 
 ```sh
-./bin/ciphertrail scan /path/to/repository --offline --output cbom.json
+./bin/cadi scan /path/to/repository --offline --output cbom.json
 ```
 
 `--offline` cannot be combined with TLS/SSH probes. For private-module setup,

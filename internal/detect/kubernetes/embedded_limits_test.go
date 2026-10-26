@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"go.yaml.in/yaml/v3"
@@ -186,10 +186,10 @@ resources:
 			a := entry.Component.CryptoProperties.AlgorithmProperties
 			cbc = a.Mode == cdx.CryptoAlgorithmModeCBC && a.Padding == cdx.CryptoPaddingPKCS7 &&
 				reflect.DeepEqual(*a.CryptoFunctions, []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionDecrypt}) &&
-				properties["ciphertrail:encryption.resources"] == "*.*"
+				properties["cadi:encryption.resources"] == "*.*"
 		}
 		if entry.Component.Name == "Kubernetes encryption key reference" {
-			roles[properties["ciphertrail:encryption.key-name"]] = properties["ciphertrail:encryption.key-role"]
+			roles[properties["cadi:encryption.key-name"]] = properties["cadi:encryption.key-role"]
 		}
 	}
 	if !cbc || roles["first"] != "encrypt, decrypt" || roles["old"] != "decrypt" {

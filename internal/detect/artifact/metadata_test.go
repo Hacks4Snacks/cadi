@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/detect"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
 )
 
 func TestBuildSettingsDoNotExportLinkerSecrets(t *testing.T) {

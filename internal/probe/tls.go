@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/material"
+	"cadi/internal/inventory"
+	"cadi/internal/material"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )

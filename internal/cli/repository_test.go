@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/testutil"
+	"cadi/internal/testutil"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -406,7 +406,7 @@ func TestOverlappingInputsDoNotRepeatModuleOrFileAnalysis(t *testing.T) {
 
 func TestSharedExclusionsAndGeneratedOutputDoNotPolluteRepositoryScans(t *testing.T) {
 	root := t.TempDir()
-	writeRepositoryFile(t, root, ".ciphertrailignore", "ignored/\n")
+	writeRepositoryFile(t, root, ".cadiignore", "ignored/\n")
 	writeRepositoryFile(t, root, "go.mod", "module example.test/scope\n\ngo 1.27.0\n")
 	writeRepositoryFile(t, root, "main.go", "package example\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n")
 	for _, directory := range []string{"ignored", "excluded", "testdata", "samples", "examples", "out"} {

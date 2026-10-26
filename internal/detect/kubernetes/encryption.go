@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	"go.yaml.in/yaml/v3"
 )

@@ -21,6 +21,12 @@ type Options struct {
 	SkipReports        bool
 }
 
+// IgnoreFileName is the canonical repository exclusion file.
+const IgnoreFileName = ".cadiignore"
+
+// LegacyIgnoreFileName remains supported during migration from CipherTrail.
+const LegacyIgnoreFileName = ".ciphertrailignore"
+
 func exclusionPath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" || strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\\*?[]!:\x00\r\n") {
@@ -48,7 +54,7 @@ func ValidateExclusions(values []string) error {
 	return nil
 }
 
-// LoadExclusions combines literal root-relative CLI and .ciphertrailignore entries.
+// LoadExclusions combines literal CLI exclusions with current and legacy ignore files.
 func LoadExclusions(root string, specified []string) ([]string, error) {
 	var exclusions []string
 	add := func(value string) error {
@@ -64,35 +70,36 @@ func LoadExclusions(root string, specified []string) ([]string, error) {
 			return nil, fmt.Errorf("invalid --exclude: %w", err)
 		}
 	}
-	const name = ".ciphertrailignore"
-	info, err := os.Lstat(filepath.Join(root, name))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("inspect %s: %w", name, err)
-	}
-	if err == nil {
-		const limit = 64 << 10
-		if !info.Mode().IsRegular() || info.Size() > limit {
-			return nil, fmt.Errorf("%s must be a regular, non-symlink file no larger than 64 KiB", name)
+	for _, name := range []string{IgnoreFileName, LegacyIgnoreFileName} {
+		info, err := os.Lstat(filepath.Join(root, name))
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect %s: %w", name, err)
 		}
-		file, err := os.OpenInRoot(root, name)
-		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", name, err)
-		}
-		defer file.Close()
-		data, err := io.ReadAll(io.LimitReader(file, limit+1))
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", name, err)
-		}
-		if len(data) > limit {
-			return nil, fmt.Errorf("%s exceeded 64 KiB while reading", name)
-		}
-		for i, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
+		if err == nil {
+			const limit = 64 << 10
+			if !info.Mode().IsRegular() || info.Size() > limit {
+				return nil, fmt.Errorf("%s must be a regular, non-symlink file no larger than 64 KiB", name)
 			}
-			if err := add(line); err != nil {
-				return nil, fmt.Errorf("%s:%d: %w", name, i+1, err)
+			file, err := os.OpenInRoot(root, name)
+			if err != nil {
+				return nil, fmt.Errorf("open %s: %w", name, err)
+			}
+			defer file.Close()
+			data, err := io.ReadAll(io.LimitReader(file, limit+1))
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", name, err)
+			}
+			if len(data) > limit {
+				return nil, fmt.Errorf("%s exceeded 64 KiB while reading", name)
+			}
+			for i, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				if err := add(line); err != nil {
+					return nil, fmt.Errorf("%s:%d: %w", name, i+1, err)
+				}
 			}
 		}
 	}

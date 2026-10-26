@@ -2,7 +2,7 @@
 
 [Home](../README.md) | [Scanning guide](scanning.md) | [Scan reports](scan-report.md)
 
-CipherTrail produces CycloneDX 1.7 JSON. This guide covers:
+CADI produces CycloneDX 1.7 JSON. This guide covers:
 
 - [Crypto-focused output](#crypto-focused-output) and dependency context.
 - [The human-readable summary](#human-readable-summary).
@@ -11,6 +11,10 @@ CipherTrail produces CycloneDX 1.7 JSON. This guide covers:
 - [Native material formats](#native-material-formats).
 - [Document identity](#document-and-primary-component-identity).
 - [Exit codes and safe output files](#exit-codes-and-output-safety).
+
+The project-name transition changes custom properties to `cadi:*` and generated
+references to `urn:cadi:*`. See the [migration contract](development.md#transition-from-ciphertrail)
+before comparing IDs with older CipherTrail output or updating report consumers.
 
 ## Crypto-focused output
 
@@ -29,13 +33,13 @@ libraries are removed together with their dependency edges; importing a retained
 crypto provider does not automatically retain every other consumer of that
 provider.
 
-For Go source findings, CipherTrail links the crypto use to the resolved module
+For Go source findings, CADI links the crypto use to the resolved module
 providing the called API, or to the versioned Go standard library. This is
 source-level implementation context, not proof of runtime execution. Runtime
 probes do not infer the remote server's implementation library.
 
 Python provider libraries use concise labels such as `requests`, retaining their
-source-import/API qualification in `ciphertrail:scope`. No installed distribution,
+source-import/API qualification in `cadi:scope`. No installed distribution,
 version, or TLS backend is inferred from that label. The protocol/algorithm and
 the supporting library remain separate components connected by `dependsOn`;
 both can legitimately cite the same call site. In the optional summary, that
@@ -46,8 +50,8 @@ implementation.
 To include the full collected software/dependency inventory instead:
 
 ```sh
-./bin/ciphertrail scan . --include-dependencies --output combined-bom.json
-./bin/ciphertrail scan ./service-binary --include-dependencies --output binary-bom.json
+./bin/cadi scan . --include-dependencies --output combined-bom.json
+./bin/cadi scan ./service-binary --include-dependencies --output binary-bom.json
 ```
 
 Both modes use the same collectors and preserve crypto asset references,
@@ -67,7 +71,7 @@ cryptography.
 For a crypto-focused view alongside the complete JSON report:
 
 ```sh
-./bin/ciphertrail scan . --summary --output cbom.json
+./bin/cadi scan . --summary --output cbom.json
 ```
 
 `--summary` adds a table on stderr with one row per cryptographic asset, its
@@ -89,10 +93,10 @@ runtime observations.
 
 Per-component namespaced properties add:
 
-- `ciphertrail:evidence-kind` and `ciphertrail:collector`: flat classification
+- `cadi:evidence-kind` and `cadi:collector`: flat classification
   and collector fields when every evidence record for a component is simple
   and agrees on both values. These apply to all of its native occurrences.
-- `ciphertrail:provenance`: occurrence-linked records when evidence has differing
+- `cadi:provenance`: occurrence-linked records when evidence has differing
   classifications/collectors or additional detail: observation time, a
   location-free symbol, source-locator context, or declaration facts. These retain
   `present` / `configured` / `observed` classification and collector. Qualified
@@ -106,7 +110,7 @@ Per-component namespaced properties add:
 Collectors emit facts directly into their native fields: Go API identity is
 already in `evidence.occurrences.symbol`, and a mapped algorithm key-size value
 is written to `cryptoProperties.algorithmProperties.parameterSetIdentifier`
-without also emitting `ciphertrail:key-size-bits`. Parameters with no native
+without also emitting `cadi:key-size-bits`. Parameters with no native
 mapping, including qualified declarations, remain properties.
 
 The exporter does not parse source-symbol strings or match algorithm-name
@@ -134,16 +138,16 @@ For simple source evidence, the component properties are:
 
 ```json
 [
-  { "name": "ciphertrail:collector", "value": "go" },
-  { "name": "ciphertrail:evidence-kind", "value": "configured" }
+  { "name": "cadi:collector", "value": "go" },
+  { "name": "cadi:evidence-kind", "value": "configured" }
 ]
 ```
 
-For richer evidence, a decoded `ciphertrail:provenance` property can contain:
+For richer evidence, a decoded `cadi:provenance` property can contain:
 
 ```json
 {
-  "occurrence": "urn:ciphertrail:<occurrence-hash>",
+  "occurrence": "urn:cadi:<occurrence-hash>",
   "kind": "configured",
   "collector": "go",
   "parameters": [
@@ -249,7 +253,7 @@ and consolidation are preserved. If every collected observation agrees, the
 format is emitted once in the native field. If formats differ, or some
 observations have no established format, the native field is omitted and known
 values are retained as occurrence-linked `materialFormat` fields in
-`ciphertrail:provenance`. Input order does not select a winning format.
+`cadi:provenance`. Input order does not select a winning format.
 
 Both output scopes use the same rules. Rescan existing CBOMs to populate the
 new fields; configured-component references can change when collected metadata
@@ -262,7 +266,7 @@ to the official 1.7 release. Generation and validation target 1.7 only.
 There is no version-conversion step that might discard or change assets.
 
 The 1.7 output uses native `certificateProperties.serialNumber` instead of the
-former `ciphertrail:certificate-serial-number` property. Curves use
+former `cadi:certificate-serial-number` property. Curves use
 `algorithmProperties.ellipticCurve` with canonical identifiers such as
 `nist/P-256`, `other/Ed25519`, and `other/Curve25519`. Certificates, keys, and
 protocols use `relatedCryptographicAssets` for their relationships, with explicit
@@ -275,9 +279,9 @@ private-key material and private-key digests are not exported.
 
 The CBOM header retains native generation time and scanner identity, plus only:
 
-- `ciphertrail:collection-status`: `succeeded` or `incomplete` execution.
-- `ciphertrail:output-scope`: `crypto-focused` or `full-dependencies`.
-- `ciphertrail:coverage-limitation`, when needed: concise qualifications such as
+- `cadi:collection-status`: `succeeded` or `incomplete` execution.
+- `cadi:output-scope`: `crypto-focused` or `full-dependencies`.
+- `cadi:coverage-limitation`, when needed: concise qualifications such as
   rendering required, failed analysis, or analysis diagnostics being reported.
 
 It does not contain serialized collection payloads, omission counters, input-target
@@ -372,9 +376,9 @@ schema-valid partial report and the command exits 1. No algorithm choice,
 certificate expiry, or key size causes a policy exit.
 
 Named CBOM and scan-report output files are written atomically with owner-only
-permissions. CipherTrail refuses to overwrite explicit inputs, credentials,
+permissions. CADI refuses to overwrite explicit inputs, credentials,
 symlinks, special files, the other output, or unrelated existing files. Each
-output can replace only a previous CipherTrail artifact of the same format,
+output can replace only a previous CADI artifact of the same format,
 provided that file did not change during collection. The two writes are
 individually atomic, not a multi-file transaction; failure of either returns
 exit 1.

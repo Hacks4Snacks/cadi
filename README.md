@@ -1,8 +1,9 @@
-# CipherTrail
+# Cryptographic Asset Discovery and Inventory
 
 Cryptography discovery, backed by evidence.
 
-CipherTrail is a command-line tool that generates **CycloneDX 1.7 cryptographic
+**Cryptographic Asset Discovery and Inventory (CADI)**, invoked as `cadi`, is a
+command-line tool that generates **CycloneDX 1.7 cryptographic
 bills of materials (CBOMs)**. It identifies supported algorithms, protocols,
 certificates, and keys, together with public parameters, dependency context, and
 the evidence behind each finding.
@@ -33,7 +34,7 @@ are needed.
 ```sh
 go mod download
 make build
-./bin/ciphertrail scan /path/to/repository \
+./bin/cadi scan /path/to/repository \
   --output cbom.json \
   --scan-report scan-report.json \
   --summary
@@ -45,6 +46,10 @@ coverage and diagnostics. The summary goes to stderr.
 
 For analyzer selection, combined inputs, exclusions, and offline operation, start
 with the [scanning guide](docs/scanning.md).
+
+Renaming an existing CipherTrail checkout does not require changing its directory.
+See the [transition notes](docs/development.md#transition-from-ciphertrail) for
+ignore-file compatibility and changed report identifiers.
 
 ## Releases
 
@@ -71,11 +76,11 @@ for publication prerequisites, Conventional Commits, and release recovery.
 
 ## Boundaries
 
-CipherTrail does not execute scanned application code, render charts, discover
+CADI does not execute scanned application code, render charts, discover
 network targets, or access clusters. It does not upload source to a hosted scanner
 or include private-key values in reports. Reports can still contain sensitive
 operational metadata and should be handled accordingly.
 
 Go analysis may download missing dependencies through your existing Go settings.
-Use `--offline` for cache-only scans. CipherTrail does not score risk, enforce
+Use `--offline` for cache-only scans. CADI does not score risk, enforce
 cryptographic policy, claim compliance, or remediate findings.

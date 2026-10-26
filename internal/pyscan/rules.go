@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )

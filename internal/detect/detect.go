@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )

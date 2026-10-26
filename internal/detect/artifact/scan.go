@@ -10,10 +10,10 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/material"
+	"cadi/internal/detect"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
+	"cadi/internal/material"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )

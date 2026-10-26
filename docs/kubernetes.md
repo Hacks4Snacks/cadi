@@ -6,8 +6,8 @@ Supply rendered Kubernetes YAML/JSON as a PATH input. Use `--analyzers kubernete
 when only configuration analysis is wanted, or combine it with a repository:
 
 ```sh
-./bin/ciphertrail scan ./rendered.yaml --offline --output manifests.cbom.json
-./bin/ciphertrail scan ./service ./manifests --output service.cbom.json
+./bin/cadi scan ./rendered.yaml --offline --output manifests.cbom.json
+./bin/cadi scan ./service ./manifests --output service.cbom.json
 ```
 
 Repository and image scans register Kubernetes detection when that analyzer is
@@ -59,7 +59,7 @@ The detector does not validate key/certificate pairing or Kubernetes admission.
 ## Render Helm separately
 
 Render Helm charts separately in your existing build workflow, then supply the
-rendered output. CipherTrail does not invoke Helm, fetch chart dependencies,
+rendered output. CADI does not invoke Helm, fetch chart dependencies,
 evaluate `lookup`, or reconstruct values files and rendering flags. Recognized
 `# Source: chart/templates/file.yaml` comments are retained as origin metadata.
 Unrendered resource identities/directives produce explicit scope notes;
@@ -70,7 +70,7 @@ exporting per-field unresolved lists or suppressing other resolved fields.
 
 Rendering resolves Helm expressions, not every later substitution. A rendered
 ConfigMap can still hold a YAML stream containing CAPI resources, cloud-init
-expressions, and bootstrap files. CipherTrail follows those structured layers:
+expressions, and bootstrap files. CADI follows those structured layers:
 
 - ConfigMap `data` and base64 `binaryData` values containing typed YAML/JSON.
 - `KubeadmControlPlane.spec.kubeadmConfigSpec`,

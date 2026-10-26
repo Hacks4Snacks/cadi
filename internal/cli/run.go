@@ -1,4 +1,4 @@
-// Package cli provides CipherTrail's command-line interface.
+// Package cli provides CADI's command-line interface.
 package cli
 
 import (
@@ -14,9 +14,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scan"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
+	"cadi/internal/scan"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"github.com/spf13/pflag"
@@ -25,12 +25,12 @@ import (
 // Version is overridden by release builds.
 var Version = "dev"
 
-const usage = `CipherTrail: evidence-driven cryptographic inventory
+const usage = inventory.ProjectName + ` (cadi): evidence-driven cryptographic inventory
 
 Usage:
-  ciphertrail scan PATH... [options]
-  ciphertrail scan --image PATH | --tls HOST:PORT | --ssh HOST:PORT [options]
-  ciphertrail version
+  cadi scan PATH... [options]
+  cadi scan --image PATH | --tls HOST:PORT | --ssh HOST:PORT [options]
+  cadi version
 
 PATH inputs:
   Directories are mixed repositories; files are explicit passive inputs.
@@ -68,7 +68,7 @@ Runtime options:
                     Optional mTLS identity
   --tls-insecure    Explicitly observe TLS without peer verification
 
-Repository scope reads .ciphertrailignore and excludes generated output, known
+Repository scope reads .cadiignore (and legacy .ciphertrailignore) and excludes generated output, known
 test/dependency directories, and nested Git repositories by default. Explicit
 file inputs can select material inside default-excluded directories.
 Helm templates require separately rendered YAML/JSON; charts are not executed.
@@ -84,14 +84,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version", "--version":
-		fmt.Fprintln(stdout, "ciphertrail "+toolVersion())
+		fmt.Fprintln(stdout, inventory.ToolName+" "+toolVersion())
 		return 0
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return 0
 	case "scan":
 	default:
-		fmt.Fprintln(stderr, "ERROR: unknown command; use ciphertrail help")
+		fmt.Fprintln(stderr, "ERROR: unknown command; use cadi help")
 		return 2
 	}
 	var options scan.Options
@@ -310,13 +310,13 @@ func writeSummary(writer io.Writer, data []byte, incomplete bool) error {
 			var kinds, locations []string
 			if asset.Properties != nil {
 				for _, property := range *asset.Properties {
-					if property.Name == "ciphertrail:evidence-kind" {
+					if property.Name == "cadi:evidence-kind" {
 						if property.Value != "" {
 							kinds = append(kinds, property.Value)
 						}
 						continue
 					}
-					if property.Name != "ciphertrail:provenance" {
+					if property.Name != "cadi:provenance" {
 						continue
 					}
 					var evidence struct{ Kind string }

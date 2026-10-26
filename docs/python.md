@@ -7,9 +7,9 @@ or installed project environment is required. Individual `.py` files are also
 valid source inputs, including files with no recognized cryptography:
 
 ```sh
-./bin/ciphertrail scan ./service ./rendered.yaml --output service.cbom.json
-./bin/ciphertrail scan ./service --analyzers python --output python.cbom.json
-./bin/ciphertrail scan ./service/crypto.py --analyzers python
+./bin/cadi scan ./service ./rendered.yaml --output service.cbom.json
+./bin/cadi scan ./service --analyzers python --output python.cbom.json
+./bin/cadi scan ./service/crypto.py --analyzers python
 ```
 
 The Go collector runs an embedded, trusted AST frontend with

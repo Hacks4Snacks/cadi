@@ -9,12 +9,12 @@ import (
 	"slices"
 	"strings"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/goscan"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/pyscan"
-	"ciphertrail/internal/scope"
+	"cadi/internal/detect"
+	"cadi/internal/goscan"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
+	"cadi/internal/pyscan"
+	"cadi/internal/scope"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -70,7 +70,9 @@ func (o Options) prepare(ctx context.Context, outputs []string, selected []strin
 			selection.Target = path
 		}
 		if selection.Root != "" {
-			plan.Inputs = append(plan.Inputs, filepath.Join(selection.Root, ".ciphertrailignore"))
+			plan.Inputs = append(plan.Inputs,
+				filepath.Join(selection.Root, scope.IgnoreFileName),
+				filepath.Join(selection.Root, scope.LegacyIgnoreFileName))
 		}
 		targets = append(targets, &target{selection: selection, err: err})
 	}

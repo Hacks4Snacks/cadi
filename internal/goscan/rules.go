@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/tools/go/ssa"

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/testutil"
+	"cadi/internal/detect"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
+	"cadi/internal/testutil"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"github.com/google/go-containerregistry/pkg/name"

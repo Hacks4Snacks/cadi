@@ -8,7 +8,7 @@ Aliases do not defeat recognition, and unrelated functions with similar names
 are not treated as cryptography.
 
 ```sh
-./bin/ciphertrail scan /path/to/repository \
+./bin/cadi scan /path/to/repository \
   --analyzers go --goos linux --goarch amd64 --output go.cbom.json
 ```
 
@@ -139,7 +139,7 @@ For RSA generation through receiver fields, explicit integer field initializers
 are recorded as qualified alternatives rather than unconditional key sizes.
 They are matched by field/type identity and retain their source locations.
 For example, a factory assigning 4096 bits adds
-`ciphertrail:key-size-bits:declared = 4096` and a `field-initializer` parameter
+`cadi:key-size-bits:declared = 4096` and a `field-initializer` parameter
 fact, without setting an unconditional native parameter set on an unconstrained
 method. Zero-value receivers, later mutation, other constructions, and whether
 the factory is ever called are not proven away.
@@ -164,7 +164,7 @@ explicitly excluded, even when their directory is named `test` or `tests`.
 ## Declarative certificate configuration
 
 Cryptography can be requested without directly calling `crypto/x509`.
-CipherTrail recognizes resolved cert-manager `CertificateSpec` and
+CADI recognizes resolved cert-manager `CertificateSpec` and
 `CertificatePrivateKey` types in Go source, including aliases. Unrelated types
 with the same short names are not treated as certificates.
 
@@ -209,7 +209,7 @@ specification that uses it; neither entry represents an observed private key.
 
 Source scans automatically prepare missing dependencies by default. Each
 selected module is first checked against the local cache. If modules or
-checksums are missing, CipherTrail prepares the selected packages using the
+checksums are missing, CADI prepares the selected packages using the
 existing Go proxy, private-module, checksum-service, and VCS authentication
 settings, then retries source analysis offline.
 
@@ -219,7 +219,7 @@ Tagged dependencies are prepared for that same context; users do not need to
 repeat CLI tags in `GOFLAGS`. Isolated-manifest flags are preserved throughout.
 
 ```sh
-./bin/ciphertrail scan /path/to/repository --output cbom.json
+./bin/cadi scan /path/to/repository --output cbom.json
 ```
 
 Standalone modules use isolated alternate `go.mod`/`go.sum` files for dependency
@@ -243,7 +243,7 @@ rather than silently changing module requirements. It does not run tests,
 `go generate`, or the target application.
 
 Configure `GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, and authentication as for a normal
-Go build before scanning private repositories. CipherTrail preserves these
+Go build before scanning private repositories. CADI preserves these
 settings during preparation; it does not invent credentials or upload source
 to a scanning service. Go/VCS interactive password prompts and automatic Go
 toolchain downloads are disabled. Preparation is bounded to ten minutes per
@@ -252,7 +252,7 @@ attempt and respects cancellation.
 Use `--offline` for strict cache-only operation:
 
 ```sh
-./bin/ciphertrail scan /path/to/repository --offline --output cbom.json
+./bin/cadi scan /path/to/repository --offline --output cbom.json
 ```
 
 In this mode, dependencies and checksums must be available locally. Isolated
@@ -269,7 +269,7 @@ the host platform. For Linux-only code scanned on macOS, select its deployment
 target explicitly rather than suppressing platform-specific compilation errors:
 
 ```sh
-./bin/ciphertrail scan /path/to/repository \
+./bin/cadi scan /path/to/repository \
   --goos linux --goarch amd64 --output cbom.json
 ```
 
@@ -278,7 +278,7 @@ exits 1. Invalid module versions, unavailable private credentials, checksum
 failures, and incompatible local toolchains still require correction; they are
 not converted into empty successful scans.
 
-For package-load problems, CipherTrail groups failures by safe cause and reports
+For package-load problems, CADI groups failures by safe cause and reports
 the affected package count and an example location, instead of repeating a
 numeric error kind for every import. For example, `module lookup disabled by
 GOPROXY=off` means the offline cache is missing a required module version, not

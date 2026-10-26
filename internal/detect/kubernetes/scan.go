@@ -15,9 +15,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/detect"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
 
 	"go.yaml.in/yaml/v3"
 )

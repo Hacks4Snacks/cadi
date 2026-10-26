@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/material"
+	"cadi/internal/inventory"
+	"cadi/internal/material"
 
 	"go.yaml.in/yaml/v3"
 )

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/detect"
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/testutil"
+	"cadi/internal/detect"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
+	"cadi/internal/testutil"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -120,12 +120,12 @@ spec:
 			for _, property := range *entry.Component.Properties {
 				properties[property.Name] = property.Value
 			}
-			if properties["ciphertrail:cert-manager.is-ca"] != "false" ||
-				!strings.Contains(properties["ciphertrail:cert-manager.usages"], "server auth") {
+			if properties["cadi:cert-manager.is-ca"] != "false" ||
+				!strings.Contains(properties["cadi:cert-manager.usages"], "server auth") {
 				t.Fatalf("configured values changed: %v", properties)
 			}
 			for _, field := range []string{"duration", "renew-before", "issuer.name", "issuer.kind", "issuer.group", "secret-name", "common-name", "dns-names"} {
-				if _, exists := properties["ciphertrail:cert-manager."+field]; exists {
+				if _, exists := properties["cadi:cert-manager."+field]; exists {
 					t.Fatalf("deployment-only field was retained: %s", field)
 				}
 			}

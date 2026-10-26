@@ -30,7 +30,7 @@ func isolateModuleFiles(ctx context.Context, directory string, env []string) (*m
 	if err != nil {
 		return nil, err
 	}
-	temporary, err := os.MkdirTemp("", "ciphertrail-module-")
+	temporary, err := os.MkdirTemp("", "cadi-module-")
 	if err != nil {
 		return nil, errors.Join(err, cleanWork())
 	}

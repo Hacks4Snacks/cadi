@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )

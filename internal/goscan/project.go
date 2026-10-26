@@ -6,8 +6,8 @@ import (
 	"go/types"
 	"strconv"
 
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scope"
+	"cadi/internal/inventory"
+	"cadi/internal/scope"
 
 	"golang.org/x/tools/go/packages"
 )

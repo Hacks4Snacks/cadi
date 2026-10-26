@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -27,7 +27,7 @@ func fixture(t *testing.T, source string) string {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{
-		"go.mod": []byte(strings.Replace(string(mod), "module ciphertrail", "module example.test/fixture", 1)),
+		"go.mod": []byte(strings.Replace(string(mod), "module cadi", "module example.test/fixture", 1)),
 		"go.sum": sum, "main.go": []byte(source),
 	}
 	for name, content := range files {
@@ -156,7 +156,7 @@ func Generate() { _, _ = rsa.GenerateKey(rand.Reader, 4096) }
 			for _, property := range *component.Properties {
 				properties[property.Name] = property.Value
 			}
-			if len(properties) != 2 || properties["ciphertrail:evidence-kind"] != "configured" || properties["ciphertrail:collector"] != "go" {
+			if len(properties) != 2 || properties["cadi:evidence-kind"] != "configured" || properties["cadi:collector"] != "go" {
 				t.Fatalf("RSA did not use simple native-first output: %v", properties)
 			}
 		}
@@ -545,7 +545,7 @@ func Run(dynamic int) {
 		ssh = ssh || strings.Contains(entry.Evidence.Symbol, "ssh.ParseAuthorizedKey")
 		if entry.Evidence.Symbol == "crypto/tls.Config" && entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				tls = tls || property.Name == "ciphertrail:tls.min-version" && property.Value == "1.3"
+				tls = tls || property.Name == "cadi:tls.min-version" && property.Value == "1.3"
 			}
 		}
 		if entry.Evidence.Line == 0 || entry.Evidence.Location == "" || entry.Evidence.Kind != "configured" {
@@ -553,10 +553,10 @@ func Run(dynamic int) {
 		}
 		if entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				if property.Name == "ciphertrail:api" {
+				if property.Name == "cadi:api" {
 					t.Fatal("typed source API evidence was duplicated as a property")
 				}
-				if property.Name == "ciphertrail:key-size-bits" && p.AlgorithmProperties != nil &&
+				if property.Name == "cadi:key-size-bits" && p.AlgorithmProperties != nil &&
 					p.AlgorithmProperties.ParameterSetIdentifier != "" {
 					t.Fatal("a native algorithm parameter was duplicated as a property")
 				}
@@ -802,7 +802,7 @@ func Run(signer crypto.Signer, private *ecdh.PrivateKey, public *ecdh.PublicKey,
 		}
 		if entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				if property.Name == "ciphertrail:analysis-scope" {
+				if property.Name == "cadi:analysis-scope" {
 					t.Fatal("generic analysis boilerplate was copied into component metadata")
 				}
 			}
@@ -894,11 +894,11 @@ func Build(issuer, secret string) cm.Certificate {
 		for _, property := range *entry.Component.Properties {
 			properties[property.Name] = property.Value
 		}
-		if !strings.Contains(properties["ciphertrail:cert-manager.usages"], "server auth") {
+		if !strings.Contains(properties["cadi:cert-manager.usages"], "server auth") {
 			t.Fatalf("incorrect or guessed declaration settings: %v", properties)
 		}
 		for _, field := range []string{"duration", "renew-before", "issuer.name", "issuer.kind", "issuer.group", "secret-name", "common-name"} {
-			if _, exists := properties["ciphertrail:cert-manager."+field]; exists {
+			if _, exists := properties["cadi:cert-manager."+field]; exists {
 				t.Fatalf("deployment-only field was retained: %s", field)
 			}
 		}
@@ -1100,14 +1100,14 @@ func TLS(version uint16) *tls.Config { return &tls.Config{MinVersion:version,Ins
 			}
 		}
 		if entry.Component.Name == "cert-manager Certificate configuration" {
-			if _, hasCASetting := p["ciphertrail:cert-manager.is-ca"]; hasCASetting {
+			if _, hasCASetting := p["cadi:cert-manager.is-ca"]; hasCASetting {
 				configured = true
-				if p["ciphertrail:cert-manager.is-ca"] != "false" ||
+				if p["cadi:cert-manager.is-ca"] != "false" ||
 					len(entry.Evidence.Parameters) != 0 || len(entry.Evidence.Unresolved) != 0 {
 					t.Fatalf("crypto settings changed or ignored spec details were still analyzed: %+v %v", entry.Evidence, p)
 				}
 				for _, name := range []string{"duration", "duration:declared", "renew-before", "issuer.name", "issuer.kind", "issuer.group", "common-name", "secret-name", "usages"} {
-					if _, exists := p["ciphertrail:cert-manager."+name]; exists {
+					if _, exists := p["cadi:cert-manager."+name]; exists {
 						t.Fatalf("absent or unresolved value placeholder retained: %s", name)
 					}
 				}
@@ -1120,16 +1120,16 @@ func TLS(version uint16) *tls.Config { return &tls.Config{MinVersion:version,Ins
 		}
 		if entry.Component.Name == "cert-manager Private key configuration" {
 			key = true
-			if p["ciphertrail:cert-manager.key-size"] != "0" ||
-				p["ciphertrail:cert-manager.key-encoding"] != "unknown" ||
+			if p["cadi:cert-manager.key-size"] != "0" ||
+				p["cadi:cert-manager.key-encoding"] != "unknown" ||
 				len(entry.Evidence.Unresolved) != 0 {
 				t.Fatalf("literal zero/unknown value or key evidence scope changed: %v %+v", p, entry.Evidence)
 			}
 		}
 		if entry.Evidence.Symbol == "crypto/tls.Config" {
 			tlsConfig = true
-			if p["ciphertrail:tls.insecure-skip-verify"] != "false" ||
-				p["ciphertrail:tls.min-version"] != "" ||
+			if p["cadi:tls.insecure-skip-verify"] != "false" ||
+				p["cadi:tls.min-version"] != "" ||
 				!slices.Contains(entry.Evidence.Unresolved, "tls.min-version") {
 				t.Fatalf("TLS literal and dynamic values were conflated: %v %+v", p, entry.Evidence)
 			}
@@ -1151,7 +1151,7 @@ func TLS(version uint16) *tls.Config { return &tls.Config{MinVersion:version,Ins
 			continue
 		}
 		for _, property := range *component.Properties {
-			if property.Name == "ciphertrail:evidence" || property.Name == "ciphertrail:parameters" {
+			if property.Name == "cadi:evidence" || property.Name == "cadi:parameters" {
 				t.Fatal("duplicate evidence or generic unknown disclaimer remains")
 			}
 		}
@@ -1376,8 +1376,8 @@ func MutateCopy() { copy := CopyKey(); copy.Size = 384 }
 		}
 		if entry.Component.Name == "cert-manager Certificate configuration" {
 			for _, property := range *entry.Component.Properties {
-				durationFound = durationFound || property.Name == "ciphertrail:cert-manager.duration" && property.Value == "720h0m0s"
-				usageFound = usageFound || property.Name == "ciphertrail:cert-manager.usages" && property.Value == "digital signature"
+				durationFound = durationFound || property.Name == "cadi:cert-manager.duration" && property.Value == "720h0m0s"
+				usageFound = usageFound || property.Name == "cadi:cert-manager.usages" && property.Value == "digital signature"
 			}
 		}
 	}
@@ -1504,9 +1504,9 @@ func Run(client *ssh.Client, session *ssh.Session, channel ssh.Channel, key *rsa
 		}
 		if entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				auth = auth || property.Name == "ciphertrail:ssh.auth-method" && property.Value == "public-key"
-				hostKeys = hostKeys || property.Name == "ciphertrail:ssh.host-key-verification" && property.Value == "disabled"
-				if property.Name == "ciphertrail:scope" && strings.HasPrefix(property.Value, "source API use;") {
+				auth = auth || property.Name == "cadi:ssh.auth-method" && property.Value == "public-key"
+				hostKeys = hostKeys || property.Name == "cadi:ssh.host-key-verification" && property.Value == "disabled"
+				if property.Name == "cadi:scope" && strings.HasPrefix(property.Value, "source API use;") {
 					t.Fatal("generic source-analysis caveat was duplicated on the SSH finding")
 				}
 			}
@@ -1552,7 +1552,7 @@ import "crypto/sha256"
 func Run() { _ = sha256.Sum256(nil) }
 `)
 	files := map[string]string{
-		".ciphertrailignore":             "# Deliberate source scope\ninternal/testutil/\nfixtures/nested/\n",
+		".cadiignore":                    "# Deliberate source scope\ninternal/testutil/\nfixtures/nested/\n",
 		"internal/testutil/crypto.go":    "package testutil\nfunc Broken() { undefined() }\n",
 		"fixtures/nested/go.mod":         "not a valid module\n",
 		"fixtures/nested/main.go":        "not valid Go\n",

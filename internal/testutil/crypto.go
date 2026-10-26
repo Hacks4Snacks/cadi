@@ -23,7 +23,7 @@ func Identity(t *testing.T) (tls.Certificate, *x509.Certificate, []byte, []byte)
 		t.Fatal(err)
 	}
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(42), Subject: pkix.Name{CommonName: "ciphertrail fixture"},
+		SerialNumber: big.NewInt(42), Subject: pkix.Name{CommonName: "cadi fixture"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, DNSNames: []string{"localhost"},
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,

@@ -5,9 +5,9 @@ import (
 	"context"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
 )
 
 func FuzzManifestProducesValidPartialInventory(f *testing.F) {

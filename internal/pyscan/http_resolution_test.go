@@ -61,9 +61,9 @@ func TestPythonHTTPShadowedProviders(t *testing.T) {
 				call = "http.client.HTTPSConnection('example.invalid')"
 			}
 			selection := fixture(t, map[string]string{
-				provider + ".py":     "PRIVATE_SHADOW not valid Python",
-				".ciphertrailignore": provider + ".py\n",
-				"app.py":             "import " + provider + "\n" + call,
+				provider + ".py": "PRIVATE_SHADOW not valid Python",
+				".cadiignore":    provider + ".py\n",
+				"app.py":         "import " + provider + "\n" + call,
 			})
 			result, err := (Source{Selection: selection}).Collect(context.Background())
 			if err != nil || len(httpsEntries(result)) != 0 || len(result.Diagnostics) == 0 {

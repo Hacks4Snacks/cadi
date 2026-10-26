@@ -66,7 +66,7 @@ func isolatedWorkspace(ctx context.Context, directory string, env []string) ([]s
 		}
 	}
 	work.Cleanup()
-	temporary, err := os.MkdirTemp("", "ciphertrail-workspace-")
+	temporary, err := os.MkdirTemp("", "cadi-workspace-")
 	if err != nil {
 		return nil, nil, err
 	}

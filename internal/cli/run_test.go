@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/testutil"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
+	"cadi/internal/testutil"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -56,7 +57,7 @@ func TestExistingReportCanBeReplaced(t *testing.T) {
 	if err := os.WriteFile(input, certificate, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(output, []byte(`{"bomFormat":"CycloneDX","specVersion":"1.7","version":1,"metadata":{"tools":{"components":[{"type":"application","name":"ciphertrail"}]}}}`), 0600); err != nil {
+	if err := os.WriteFile(output, []byte(`{"bomFormat":"CycloneDX","specVersion":"1.7","version":1,"metadata":{"tools":{"components":[{"type":"application","name":"cadi"}]}}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
@@ -251,11 +252,11 @@ func TestDependencyInventoryIsOptIn(t *testing.T) {
 func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 	directory := t.TempDir()
 	for name, content := range map[string]string{
-		"go.mod":             "module example.test/exclusions\n\ngo 1.27.0\n",
-		"main.go":            "package example\nimport \"crypto/sha256\"\nfunc Production() { _ = sha256.Sum256(nil) }\n",
-		"fixture.go":         "package example\nimport \"crypto/tls\"\nfunc Fixture() { _, _ = tls.X509KeyPair(nil, nil) }\n",
-		"other_fixture.go":   "package example\nimport \"crypto/sha512\"\nfunc OtherFixture() { _ = sha512.Sum512(nil) }\n",
-		".ciphertrailignore": "fixture.go\n",
+		"go.mod":           "module example.test/exclusions\n\ngo 1.27.0\n",
+		"main.go":          "package example\nimport \"crypto/sha256\"\nfunc Production() { _ = sha256.Sum256(nil) }\n",
+		"fixture.go":       "package example\nimport \"crypto/tls\"\nfunc Fixture() { _, _ = tls.X509KeyPair(nil, nil) }\n",
+		"other_fixture.go": "package example\nimport \"crypto/sha512\"\nfunc OtherFixture() { _ = sha512.Sum512(nil) }\n",
+		".cadiignore":      "fixture.go\n",
 	} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0600); err != nil {
 			t.Fatal(err)
@@ -286,14 +287,30 @@ func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 }
 
 func TestOutputCannotCreateOrOverwriteSourceIgnoreFile(t *testing.T) {
-	directory := t.TempDir()
-	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", directory, "--output", filepath.Join(directory, ".ciphertrailignore")}, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "overwrite a scan input") {
-		t.Fatalf("ignore file was not protected: exit=%d stderr=%s", code, stderr.String())
-	}
-	if _, err := os.Stat(filepath.Join(directory, ".ciphertrailignore")); !os.IsNotExist(err) {
-		t.Fatal("output created a source configuration file")
+	for _, name := range []string{".cadiignore", ".ciphertrailignore"} {
+		for _, flag := range []string{"--output", "--scan-report"} {
+			for _, exists := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/exists=%v", name, flag, exists), func(t *testing.T) {
+					directory := t.TempDir()
+					path := filepath.Join(directory, name)
+					if exists {
+						writeRepositoryFile(t, directory, name, "excluded/\n")
+					}
+					var stdout, stderr bytes.Buffer
+					code := Run(context.Background(), []string{"scan", directory, flag, path}, &stdout, &stderr)
+					if code != 1 || !strings.Contains(stderr.String(), "overwrite a scan input") {
+						t.Fatalf("ignore file was not protected: exit=%d stderr=%s", code, stderr.String())
+					}
+					if exists {
+						if data, err := os.ReadFile(path); err != nil || string(data) != "excluded/\n" {
+							t.Fatal("output changed a source configuration file")
+						}
+					} else if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatal("output created a source configuration file")
+					}
+				})
+			}
+		}
 	}
 }
 

@@ -12,9 +12,9 @@ import (
 	"testing/iotest"
 	"unicode/utf16"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
 )
 
 func TestManifestLimitsDoNotLeakParserInput(t *testing.T) {
@@ -185,14 +185,14 @@ items:
 				for _, p := range *entry.Component.Properties {
 					properties[p.Name] = p.Value
 				}
-				if properties["ciphertrail:cert-manager.common-name"] != "" || properties["ciphertrail:cert-manager.is-ca"] != "false" {
+				if properties["cadi:cert-manager.common-name"] != "" || properties["cadi:cert-manager.is-ca"] != "false" {
 					t.Fatal("omitted identity or retained CA setting changed")
 				}
 			}
 		}
 		if entry.Component.Name == "cert-manager Private key configuration" && entry.Evidence.Context.Document == 3 {
 			for _, property := range *entry.Component.Properties {
-				literalEncoding = literalEncoding || property.Name == "ciphertrail:cert-manager.key-encoding" && property.Value == "unknown"
+				literalEncoding = literalEncoding || property.Name == "cadi:cert-manager.key-encoding" && property.Value == "unknown"
 			}
 		}
 	}

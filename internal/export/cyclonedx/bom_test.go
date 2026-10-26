@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -74,7 +74,7 @@ func TestMaterialFormatsPreserveConsolidationAndProvenance(t *testing.T) {
 				}
 				formats := map[string]string{}
 				for _, property := range *component.Properties {
-					if property.Name != "ciphertrail:provenance" {
+					if property.Name != "cadi:provenance" {
 						continue
 					}
 					var record struct{ Occurrence, MaterialFormat string }
@@ -345,11 +345,11 @@ func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 			}
 			occurrence = (*component.Evidence.Occurrences)[0]
 			for _, property := range *component.Properties {
-				if property.Name == "ciphertrail:provenance" {
+				if property.Name == "cadi:provenance" {
 					if err := json.Unmarshal([]byte(property.Value), &encodedEvidence); err != nil {
 						t.Fatal(err)
 					}
-				} else if property.Name == "ciphertrail:evidence" {
+				} else if property.Name == "cadi:evidence" {
 					t.Fatal("legacy duplicate evidence is still emitted")
 				}
 			}
@@ -420,16 +420,16 @@ func TestProvenancePreservesOccurrenceAssociationsAndGroupsLimitations(t *testin
 		}
 		provenanceCount := 0
 		for _, property := range *component.Properties {
-			if property.Name == "ciphertrail:evidence" {
+			if property.Name == "cadi:evidence" {
 				t.Fatal("duplicate evidence location remains")
 			}
-			if property.Name == "ciphertrail:label" {
+			if property.Name == "cadi:label" {
 				foundLiteral = true
 				if property.Value != "unknown" {
 					t.Fatal("a known literal equal to unknown was rewritten")
 				}
 			}
-			if property.Name != "ciphertrail:provenance" {
+			if property.Name != "cadi:provenance" {
 				continue
 			}
 			provenanceCount++
@@ -521,7 +521,7 @@ func TestNativeFirstRSAPropertiesAndStableEvidence(t *testing.T) {
 		for _, property := range *got.Properties {
 			properties[property.Name] = property.Value
 		}
-		expected := map[string]string{"ciphertrail:evidence-kind": "configured", "ciphertrail:collector": "go"}
+		expected := map[string]string{"cadi:evidence-kind": "configured", "cadi:collector": "go"}
 		if !reflect.DeepEqual(properties, expected) {
 			t.Fatalf("RSA extensions were not compacted: %v", properties)
 		}
@@ -554,9 +554,9 @@ func TestSimpleProvenanceIsFlatOnlyWhenUniform(t *testing.T) {
 			flat, detailed := 0, 0
 			for _, property := range *got.Properties {
 				switch property.Name {
-				case "ciphertrail:evidence-kind", "ciphertrail:collector":
+				case "cadi:evidence-kind", "cadi:collector":
 					flat++
-				case "ciphertrail:provenance":
+				case "cadi:provenance":
 					detailed++
 					var record provenance
 					if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
@@ -596,7 +596,7 @@ func TestExporterDoesNotInterpretAPISymbolStrings(t *testing.T) {
 			bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
 			retained := false
 			for _, property := range *(*bom.Components)[0].Properties {
-				retained = retained || property.Name == "ciphertrail:api" && property.Value == test.api
+				retained = retained || property.Name == "cadi:api" && property.Value == test.api
 			}
 			if !retained {
 				t.Fatal("exporter interpreted source-symbol text to discard a supplied property")
@@ -635,8 +635,8 @@ func TestExporterDoesNotInferPropertyMeaningFromAlgorithmNames(t *testing.T) {
 			for _, property := range *(*bom.Components)[0].Properties {
 				properties[property.Name] = property.Value
 			}
-			if properties["ciphertrail:key-size-bits"] != test.size || properties["ciphertrail:key-size-bits:declared"] != test.size ||
-				properties["ciphertrail:scope"] != "declared configuration only" {
+			if properties["cadi:key-size-bits"] != test.size || properties["cadi:key-size-bits:declared"] != test.size ||
+				properties["cadi:scope"] != "declared configuration only" {
 				t.Fatalf("lost non-native or semantically distinct metadata: %v", properties)
 			}
 		})
@@ -678,10 +678,10 @@ func TestSingleDetailedEvidenceDoesNotFlatten(t *testing.T) {
 			got := (*bom.Components)[0]
 			records := 0
 			for _, property := range *got.Properties {
-				if property.Name == "ciphertrail:evidence-kind" || property.Name == "ciphertrail:collector" {
+				if property.Name == "cadi:evidence-kind" || property.Name == "cadi:collector" {
 					t.Fatal("detailed evidence was flattened")
 				}
-				if property.Name == "ciphertrail:provenance" {
+				if property.Name == "cadi:provenance" {
 					records++
 					var record provenance
 					if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
@@ -713,7 +713,7 @@ func TestUnresolvedOnlyEvidenceBecomesFlatWithoutChangingAnalysis(t *testing.T) 
 		for _, property := range *asset.Properties {
 			properties[property.Name] = property.Value
 		}
-		if len(properties) != 2 || properties["ciphertrail:evidence-kind"] != "configured" || properties["ciphertrail:collector"] != "go" {
+		if len(properties) != 2 || properties["cadi:evidence-kind"] != "configured" || properties["cadi:collector"] != "go" {
 			t.Fatalf("unresolved-only evidence was not omitted/flattened: %v", properties)
 		}
 	}
@@ -734,7 +734,7 @@ func TestUnresolvedResourceOnlyContextDoesNotCreateProvenance(t *testing.T) {
 		},
 	}, "")
 	data, err := Encode([]inventory.Collection{{Result: result}})
-	if err != nil || strings.Contains(string(data), "ciphertrail:provenance") ||
+	if err != nil || strings.Contains(string(data), "cadi:provenance") ||
 		strings.Contains(string(data), "SENTINEL") || strings.Contains(string(data), "ignored") {
 		t.Fatalf("empty projected context was retained: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestContextProjectionKeepsLocatorsNotResourceMetadata(t *testing.T) {
 	}
 	found := false
 	for _, property := range *(*bom.Components)[0].Properties {
-		if property.Name != "ciphertrail:provenance" {
+		if property.Name != "cadi:provenance" {
 			continue
 		}
 		var record provenance
@@ -809,8 +809,8 @@ func TestCBOMHeaderIsCompactAndDoesNotSerializeRunDetails(t *testing.T) {
 		limited := false
 		for _, property := range *bom.Metadata.Properties {
 			switch property.Name {
-			case "ciphertrail:output-scope", "ciphertrail:collection-status":
-			case "ciphertrail:coverage-limitation":
+			case "cadi:output-scope", "cadi:collection-status":
+			case "cadi:coverage-limitation":
 				limited = limited || strings.Contains(property.Value, "render")
 			default:
 				t.Fatalf("unexpected CBOM header property: %s", property.Name)
@@ -839,7 +839,7 @@ func TestFailureBeforeAnyFindingsStillProducesValidPartialBOM(t *testing.T) {
 	}
 	incomplete := false
 	for _, property := range *bom.Metadata.Properties {
-		incomplete = incomplete || property.Name == "ciphertrail:collection-status" && property.Value == "incomplete"
+		incomplete = incomplete || property.Name == "cadi:collection-status" && property.Value == "incomplete"
 	}
 	if !incomplete {
 		t.Fatal("missing incomplete collection status")
@@ -870,7 +870,7 @@ func TestStructuredFieldsKeepDistinctOccurrencesAtTheSameSourceLine(t *testing.T
 	}
 	fields := map[string]bool{}
 	for _, property := range *got.Properties {
-		if property.Name != "ciphertrail:provenance" {
+		if property.Name != "cadi:provenance" {
 			continue
 		}
 		var record provenance
@@ -1061,7 +1061,7 @@ func TestFocusedEmptyReportPreservesScopeAndErrors(t *testing.T) {
 			t.Errorf("lost collection context %q", value)
 		}
 	}
-	for _, value := range []string{"configured, not executed", "unmodeled API", "load failed", "ciphertrail:collection\""} {
+	for _, value := range []string{"configured, not executed", "unmodeled API", "load failed", "cadi:collection\""} {
 		if strings.Contains(string(data), value) {
 			t.Errorf("execution details leaked into the CBOM header: %q", value)
 		}

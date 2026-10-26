@@ -391,7 +391,7 @@ def qualified(value: dict[str, Any]) -> str:
 
 
 def analyze(source: bytes) -> dict[str, Any]:
-    tree = ast.parse(source, filename="<ciphertrail>", mode="exec")
+    tree = ast.parse(source, filename="<cadi>", mode="exec")
     for count, _ in enumerate(ast.walk(tree), 1):
         if count > MAX_NODES:
             raise LimitError("AST node limit exceeded")

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 )
 
 // MaxAssetBytes bounds content buffered for detection.

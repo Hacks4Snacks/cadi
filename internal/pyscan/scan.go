@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scope"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
+	"cadi/internal/scope"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )

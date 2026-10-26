@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -68,7 +68,7 @@ func EncodeReport(collections []inventory.Collection, options ReportOptions) ([]
 	}
 	report := Report{
 		ReportFormat: inventory.ScanReportFormat, ReportVersion: 1,
-		Timestamp: time.Now().UTC().Format(time.RFC3339), Tool: ReportTool{Name: "ciphertrail", Version: options.ToolVersion},
+		Timestamp: time.Now().UTC().Format(time.RFC3339), Tool: ReportTool{Name: inventory.ToolName, Version: options.ToolVersion},
 		Status: "succeeded", OutputScope: "crypto-focused", Collections: []CollectionReport{},
 	}
 	if options.IncludeDependencies {

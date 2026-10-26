@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/input"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/input"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"go.yaml.in/yaml/v3"
@@ -191,7 +191,7 @@ func TestEmbeddedIngressUsesItsOwnNamespace(t *testing.T) {
 					found = true
 					got, present := "", false
 					for _, property := range *entry.Component.Properties {
-						if property.Name == "ciphertrail:kubernetes.namespace" {
+						if property.Name == "cadi:kubernetes.namespace" {
 							got, present = property.Value, true
 						}
 					}

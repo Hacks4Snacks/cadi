@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/material"
+	"cadi/internal/inventory"
+	"cadi/internal/material"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/crypto/ssh"
@@ -20,7 +20,7 @@ type SSH struct {
 	Timeout time.Duration
 }
 
-var hostKeyCollected = errors.New("ciphertrail host-key collection complete")
+var hostKeyCollected = errors.New("cadi host-key collection complete")
 
 // Collect observes an SSH host key without trusting it, authenticating, or opening channels.
 func (p SSH) Collect(ctx context.Context) (inventory.Result, error) {

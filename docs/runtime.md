@@ -2,12 +2,12 @@
 
 [Home](../README.md) | [Scanning guide](scanning.md) | [CBOM output](output.md)
 
-Probe only endpoints you are authorized to interrogate. CipherTrail never
+Probe only endpoints you are authorized to interrogate. CADI never
 discovers targets automatically. These examples are commands for the operator
 to run; tests use loopback fixtures only.
 
 ```sh
-./bin/ciphertrail scan \
+./bin/cadi scan \
   --tls service.example:443 \
   --ssh host.example:22 \
   --timeout 5s \
@@ -23,7 +23,7 @@ TLS verifies the peer using normal trust roots by default. Supply custom roots,
 SNI, and an mTLS identity when needed:
 
 ```sh
-./bin/ciphertrail scan \
+./bin/cadi scan \
   --tls 192.0.2.10:8443 \
   --server-name service.example \
   --ca-file ca.pem \

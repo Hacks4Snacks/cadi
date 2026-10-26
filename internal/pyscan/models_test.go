@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -372,7 +372,7 @@ context.wrap_socket(unknown_socket)
 		}
 		if entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				values[strings.TrimPrefix(property.Name, "ciphertrail:")] = property.Value
+				values[strings.TrimPrefix(property.Name, "cadi:")] = property.Value
 			}
 		}
 	}

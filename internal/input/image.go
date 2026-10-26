@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	v1 "github.com/google/go-containerregistry/pkg/v1"

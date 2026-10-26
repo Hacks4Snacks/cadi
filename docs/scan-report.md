@@ -10,7 +10,7 @@ collection ran, including scope, diagnostics, preparation, and failures.
 For detailed execution and reproducibility information, write a separate report:
 
 ```sh
-./bin/ciphertrail scan . --output cbom.json --scan-report scan-report.json
+./bin/cadi scan . --output cbom.json --scan-report scan-report.json
 ```
 
 `--scan-report` requires a file path; it does not replace the CBOM or use stdout.
@@ -24,10 +24,15 @@ for partial results, replacement restrictions, and atomic-write behavior.
 
 ## Report contents
 
-The optional JSON artifact has `reportFormat: "CipherTrailScanReport"` and
+The optional JSON artifact has `reportFormat: "CADIScanReport"` and
 `reportVersion: 1`. It contains scanner identity/time, output scope/status,
 component statistics, and a `collections` array with per-input target, outcome,
 errors, diagnostics, coverage, and structured `details`.
+
+The tool name is `cadi`. Older `CipherTrailScanReport` files remain recognized for
+discovery exclusions and safe output replacement; new reports always use the
+CADI identity. See [transition details](development.md#transition-from-ciphertrail)
+for the related CBOM property and reference-namespace changes.
 
 Directory-associated collections include a `project-subject` detail containing
 the enclosing source-project `bom-ref`. This links overlapping input records and
@@ -66,9 +71,10 @@ response cannot fit can be both inspected and skipped. Ordinary unsupported
 expressions remain qualified limitations rather than operational failures.
 
 Automatic Kubernetes detection distinguishes recognized unrelated JSON from
-unclassified oversized candidates. The former is `not-applicable`; the latter
-has failed coverage and an explicit applicability error. A confirmed oversized
-resource remains a manifest-limit failure.
+unclassified oversized candidates. A collection with no recognized resources is
+`not-applicable`; an unclassified oversized candidate produces failed coverage
+and an explicit applicability error. An oversized resource candidate remains a
+manifest-limit failure.
 
 Stderr contains one coverage summary per input. Identical diagnostic messages
 are grouped with an occurrence count; every original diagnostic location is

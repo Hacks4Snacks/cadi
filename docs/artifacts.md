@@ -6,8 +6,8 @@ Scan local files or the effective filesystem of a supported image without
 running the target program or starting a container:
 
 ```sh
-./bin/ciphertrail scan ./certificates ./service-binary --output artifacts.cbom.json
-./bin/ciphertrail scan --image ./service-image.tar --output image.cbom.json
+./bin/cadi scan ./certificates ./service-binary --output artifacts.cbom.json
+./bin/cadi scan --image ./service-image.tar --output image.cbom.json
 ```
 
 ## Supported formats

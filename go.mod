@@ -1,4 +1,4 @@
-module ciphertrail
+module cadi
 
 go 1.27.0
 

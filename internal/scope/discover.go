@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -224,7 +224,7 @@ func generatedReport(root, path string) (bool, error) {
 			return json.Unmarshal(value, &version) == nil && strings.HasPrefix(version, "SPDX-"), nil
 		case "reportFormat":
 			var format string
-			return json.Unmarshal(value, &format) == nil && format == inventory.ScanReportFormat, nil
+			return json.Unmarshal(value, &format) == nil && inventory.IsScanReportFormat(format), nil
 		}
 	}
 	return false, nil

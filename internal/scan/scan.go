@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 )
 
 // Request associates a collector with its user-selected target and report identity.

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -70,7 +70,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 			incomplete = true
 		}
 		if len(collection.Result.Diagnostics) > 0 {
-			metadata = append(metadata, cdx.Property{Name: "ciphertrail:coverage-limitation", Value: "analysis diagnostics were reported"})
+			metadata = append(metadata, cdx.Property{Name: "cadi:coverage-limitation", Value: "analysis diagnostics were reported"})
 		}
 		for _, coverage := range collection.Result.Coverage {
 			var limitation string
@@ -83,7 +83,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 				limitation = coverage.Analyzer + ": some inputs require preparation"
 			}
 			if limitation != "" {
-				metadata = append(metadata, cdx.Property{Name: "ciphertrail:coverage-limitation", Value: limitation})
+				metadata = append(metadata, cdx.Property{Name: "cadi:coverage-limitation", Value: limitation})
 			}
 		}
 		for _, entry := range collection.Result.Entries {
@@ -185,7 +185,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 		scope = "crypto-focused"
 		focusGraph(components, edges, owners, subjects)
 	}
-	metadata = append(metadata, cdx.Property{Name: "ciphertrail:output-scope", Value: scope})
+	metadata = append(metadata, cdx.Property{Name: "cadi:output-scope", Value: scope})
 	ordered := make([]cdx.Component, 0, len(components))
 	for _, component := range components {
 		if component.BOMRef != subject {
@@ -207,7 +207,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	if incomplete {
 		status = "incomplete"
 	}
-	metadata = append(metadata, cdx.Property{Name: "ciphertrail:collection-status", Value: status})
+	metadata = append(metadata, cdx.Property{Name: "cadi:collection-status", Value: status})
 	slices.SortFunc(metadata, compareProperty)
 	metadata = slices.Compact(metadata)
 	bom := cdx.NewBOM()
@@ -224,7 +224,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 		Component:  components[subject],
 		Properties: &metadata,
 		Tools: &cdx.ToolsChoice{Components: &[]cdx.Component{
-			{Type: "application", Name: "ciphertrail", Version: options.ToolVersion},
+			{Type: "application", Name: inventory.ToolName, Description: inventory.ProjectName, Version: options.ToolVersion},
 		}},
 	}
 	var buffer bytes.Buffer

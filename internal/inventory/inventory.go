@@ -105,8 +105,24 @@ type RunMetadata struct {
 	Value json.RawMessage `json:"value"`
 }
 
-// ScanReportFormat identifies CipherTrail's execution report, not a CBOM.
-const ScanReportFormat = "CipherTrailScanReport"
+// ProjectName is the full name of the scanner.
+const ProjectName = "Cryptographic Asset Discovery and Inventory"
+
+// ToolName identifies the executable and generated reports.
+const ToolName = "cadi"
+
+// ScanReportFormat identifies CADI's execution report, not a CBOM.
+const ScanReportFormat = "CADIScanReport"
+
+// IsToolName recognizes current and pre-rename generator identities.
+func IsToolName(name string) bool {
+	return name == ToolName || name == "ciphertrail"
+}
+
+// IsScanReportFormat recognizes current and pre-rename execution reports.
+func IsScanReportFormat(format string) bool {
+	return format == ScanReportFormat || format == "CipherTrailScanReport"
+}
 
 // Coverage describes analyzer execution and preparation gaps, not cryptographic policy.
 type Coverage struct {
@@ -139,7 +155,7 @@ func Ref(parts ...string) string {
 		hash.Write([]byte(part))
 		hash.Write([]byte{0})
 	}
-	return "urn:ciphertrail:" + hex.EncodeToString(hash.Sum(nil))
+	return "urn:cadi:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 // Add attaches evidence and returns the component reference.
@@ -326,5 +342,5 @@ func Property(component *cdx.Component, name, value string) {
 	if component.Properties == nil {
 		component.Properties = &[]cdx.Property{}
 	}
-	*component.Properties = append(*component.Properties, cdx.Property{Name: "ciphertrail:" + name, Value: value})
+	*component.Properties = append(*component.Properties, cdx.Property{Name: "cadi:" + name, Value: value})
 }

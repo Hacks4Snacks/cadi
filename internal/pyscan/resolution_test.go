@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 )
 
 func TestPythonLexicalBindings(t *testing.T) {
@@ -59,9 +59,9 @@ func TestPythonLocalModuleShadowingIncludesExcludedFiles(t *testing.T) {
 	for _, shadow := range []string{"hashlib.py", "hashlib/__init__.py", "src/hashlib.py", "app/hashlib.py"} {
 		t.Run(shadow, func(t *testing.T) {
 			selection := fixture(t, map[string]string{
-				".ciphertrailignore": shadow + "\n",
-				shadow:               "NOT VALID PYTHON PRIVATE_SENTINEL",
-				"app/main.py":        "import hashlib\nhashlib.sha256(b'x')\n",
+				".cadiignore": shadow + "\n",
+				shadow:        "NOT VALID PYTHON PRIVATE_SENTINEL",
+				"app/main.py": "import hashlib\nhashlib.sha256(b'x')\n",
 			})
 			before, err := os.ReadFile(filepath.Join(selection.Root, shadow))
 			if err != nil {
@@ -176,9 +176,9 @@ func TestPythonPasswordProvidersRespectLocalShadows(t *testing.T) {
 	} {
 		t.Run(test.shadow, func(t *testing.T) {
 			selection := fixture(t, map[string]string{
-				".ciphertrailignore": test.shadow + "\n",
-				test.shadow:          "INVALID PRIVATE_SENTINEL",
-				"app.py":             test.code,
+				".cadiignore": test.shadow + "\n",
+				test.shadow:   "INVALID PRIVATE_SENTINEL",
+				"app.py":      test.code,
 			})
 			result, err := (Source{Selection: selection}).Collect(context.Background())
 			if err != nil {
@@ -250,7 +250,7 @@ rsa.generate_private_key(65537, 4096, **options)
 func property(entry inventory.Entry, name string) string {
 	if entry.Component.Properties != nil {
 		for _, property := range *entry.Component.Properties {
-			if property.Name == "ciphertrail:"+name {
+			if property.Name == "cadi:"+name {
 				return property.Value
 			}
 		}

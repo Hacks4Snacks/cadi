@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 )
 
 type outputKind int
@@ -106,7 +106,7 @@ func prepareOutput(path string, inputs []string, kind outputKind) (*outputTarget
 		}
 		decoder := json.NewDecoder(io.LimitReader(file, 256<<20))
 		if err := decoder.Decode(&header); err != nil {
-			return nil, fmt.Errorf("existing output is not a CipherTrail %s; refusing to overwrite it", kind.label())
+			return nil, fmt.Errorf("existing output is not a CADI %s; refusing to overwrite it", kind.label())
 		}
 		var extra json.RawMessage
 		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
@@ -117,21 +117,21 @@ func prepareOutput(path string, inputs []string, kind outputKind) (*outputTarget
 		case outputCBOM:
 			if header.BOMFormat == "CycloneDX" {
 				for _, tool := range header.Metadata.Tools.Components {
-					ours = ours || tool.Name == "ciphertrail"
+					ours = ours || inventory.IsToolName(tool.Name)
 				}
 			}
 		case outputScanReport:
-			ours = header.ReportFormat == inventory.ScanReportFormat && header.ReportVersion == 1 && header.Tool.Name == "ciphertrail"
+			ours = inventory.IsScanReportFormat(header.ReportFormat) && header.ReportVersion == 1 && inventory.IsToolName(header.Tool.Name)
 		}
 		if !ours {
-			return nil, fmt.Errorf("existing output is not a CipherTrail %s; choose a new path", kind.label())
+			return nil, fmt.Errorf("existing output is not a CADI %s; choose a new path", kind.label())
 		}
 	}
 	return target, nil
 }
 
 func (o *outputTarget) write(data []byte) error {
-	file, err := os.CreateTemp(filepath.Dir(o.path), ".ciphertrail-*.tmp")
+	file, err := os.CreateTemp(filepath.Dir(o.path), ".cadi-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create %s output: %w", o.kind.label(), err)
 	}

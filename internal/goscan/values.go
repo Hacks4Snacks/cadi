@@ -6,7 +6,7 @@ import (
 	"go/token"
 	"go/types"
 
-	"ciphertrail/internal/inventory"
+	"cadi/internal/inventory"
 
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"

@@ -15,8 +15,8 @@ import (
 	"slices"
 	"strings"
 
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scope"
+	"cadi/internal/inventory"
+	"cadi/internal/scope"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/tools/go/packages"

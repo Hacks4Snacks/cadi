@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scan"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
+	"cadi/internal/scan"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -195,7 +195,7 @@ func TestCLISeparateScanReportAndCompactCBOM(t *testing.T) {
 			t.Fatal(err)
 		}
 		header, _ := json.Marshal(bom.Metadata)
-		if strings.Contains(string(header), root) || strings.Contains(string(header), "ciphertrail:collection\"") {
+		if strings.Contains(string(header), root) || strings.Contains(string(header), "cadi:collection\"") {
 			t.Fatal("run context leaked into the CBOM header")
 		}
 		report := readScanReport(t, reportPath)
@@ -233,11 +233,11 @@ func TestScanReportOutputSafety(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "cbom-as-report":
-				writeRepositoryFile(t, root, "report.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"ciphertrail"}]}}}`)
+				writeRepositoryFile(t, root, "report.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"cadi"}]}}}`)
 			case "report-as-cbom":
-				writeRepositoryFile(t, root, "cbom.json", `{"reportFormat":"CipherTrailScanReport","reportVersion":1,"tool":{"name":"ciphertrail"}}`)
+				writeRepositoryFile(t, root, "cbom.json", `{"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"cadi"}}`)
 			case "shared-output-hardlink":
-				writeRepositoryFile(t, root, "cbom.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"ciphertrail"}]}},"reportFormat":"CipherTrailScanReport","reportVersion":1,"tool":{"name":"ciphertrail"}}`)
+				writeRepositoryFile(t, root, "cbom.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"cadi"}]}},"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"cadi"}}`)
 				if err := os.Link(output, report); err != nil {
 					t.Fatal(err)
 				}
@@ -319,16 +319,68 @@ func TestRenderedInputGapsRemainVisibleAlongsideFindings(t *testing.T) {
 	t.Fatal("Kubernetes coverage missing from scan report")
 }
 
+func TestLegacyOutputsAreSafelyReplacedWithCADIReports(t *testing.T) {
+	root := t.TempDir()
+	writeRepositoryFile(t, root, "certificate.yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: identity}\nspec: {}\n")
+	writeRepositoryFile(t, root, "cbom.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"ciphertrail"}]}}}`)
+	writeRepositoryFile(t, root, "scan.json", `{"reportFormat":"CipherTrailScanReport","reportVersion":1,"tool":{"name":"ciphertrail"}}`)
+	cbomPath, reportPath := filepath.Join(root, "cbom.json"), filepath.Join(root, "scan.json")
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"scan", root, "--output", cbomPath, "--scan-report", reportPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("legacy output migration failed: %d %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(cbomPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cyclonedx.Validate(data); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "ciphertrail") || !strings.Contains(string(data), `"name": "cadi"`) {
+		t.Fatal("replacement CBOM retained old generator or property identifiers")
+	}
+	report := readScanReport(t, reportPath)
+	if report.ReportFormat != "CADIScanReport" || report.Tool.Name != "cadi" || report.Status != "succeeded" {
+		t.Fatalf("replacement report retained its legacy identity: %+v", report)
+	}
+}
+
+func TestReportMigrationRejectsUnknownIdentityAndVersion(t *testing.T) {
+	for _, data := range []string{
+		`{"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"other"}}`,
+		`{"reportFormat":"OtherReport","reportVersion":1,"tool":{"name":"cadi"}}`,
+		`{"reportFormat":"CipherTrailScanReport","reportVersion":2,"tool":{"name":"ciphertrail"}}`,
+		`{"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"cadi"}} {}`,
+	} {
+		path := filepath.Join(t.TempDir(), "report.json")
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := prepareOutput(path, nil, outputScanReport); err == nil {
+			t.Fatal("migration broadened output ownership beyond known reports")
+		}
+		if current, err := os.ReadFile(path); err != nil || string(current) != data {
+			t.Fatal("rejected output was modified")
+		}
+	}
+}
+
 func TestExplicitToolVersionIsConsistent(t *testing.T) {
 	before := Version
 	Version = "1.2.3"
 	t.Cleanup(func() { Version = before })
 	var version, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"version"}, &version, &stderr); code != 0 || version.String() != "ciphertrail 1.2.3\n" {
+	if code := Run(context.Background(), []string{"version"}, &version, &stderr); code != 0 || version.String() != "cadi 1.2.3\n" {
 		t.Fatal("CLI ignored the explicit build version")
 	}
+	var help bytes.Buffer
+	if code := Run(context.Background(), []string{"help"}, &help, &stderr); code != 0 ||
+		!strings.Contains(help.String(), "Cryptographic Asset Discovery and Inventory") || !strings.Contains(help.String(), "cadi scan") {
+		t.Fatal("help did not identify the renamed project and command")
+	}
 	root := t.TempDir()
-	writeRepositoryFile(t, root, "source.txt", "no cryptography")
+	writeRepositoryFile(t, root, "certificate.yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: identity}\nspec: {}\n")
 	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout bytes.Buffer
 	if code := Run(context.Background(), []string{"scan", root, "--scan-report", reportPath}, &stdout, &stderr); code != 0 {
@@ -338,8 +390,32 @@ func TestExplicitToolVersionIsConsistent(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
 		t.Fatal(err)
 	}
-	if (*bom.Metadata.Tools.Components)[0].Version != "1.2.3" || readScanReport(t, reportPath).Tool.Version != "1.2.3" {
+	tool := (*bom.Metadata.Tools.Components)[0]
+	report := readScanReport(t, reportPath)
+	if tool.Version != "1.2.3" || report.Tool.Version != "1.2.3" {
 		t.Fatal("CBOM/report scanner versions differ from the CLI")
+	}
+	if tool.Name != "cadi" || tool.Description != "Cryptographic Asset Discovery and Inventory" ||
+		report.Tool.Name != "cadi" || report.ReportFormat != "CADIScanReport" || report.ReportVersion != 1 {
+		t.Fatal("CBOM/report identities differ from the renamed CLI")
+	}
+	if bom.Metadata.Component == nil || !strings.HasPrefix(bom.Metadata.Component.BOMRef, "urn:cadi:") {
+		t.Fatal("project subject did not use the CADI reference namespace")
+	}
+	for _, component := range *bom.Components {
+		if !strings.HasPrefix(component.BOMRef, "urn:cadi:") {
+			t.Errorf("component retained an old reference namespace: %s", component.BOMRef)
+		}
+		if component.Evidence != nil && component.Evidence.Occurrences != nil {
+			for _, occurrence := range *component.Evidence.Occurrences {
+				if !strings.HasPrefix(occurrence.BOMRef, "urn:cadi:") {
+					t.Errorf("occurrence retained an old reference namespace: %s", occurrence.BOMRef)
+				}
+			}
+		}
+	}
+	if strings.Contains(stdout.String(), "ciphertrail:") || !strings.Contains(stdout.String(), `"cadi:collection-status"`) {
+		t.Fatal("output properties did not consistently use the CADI namespace")
 	}
 }
 

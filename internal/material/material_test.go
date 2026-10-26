@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/testutil"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
+	"cadi/internal/testutil"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/crypto/ssh"
@@ -30,7 +30,7 @@ func TestParseCertificateAndPrivateKeyWithoutSecrets(t *testing.T) {
 	if bytes.Contains(data, []byte("BEGIN PRIVATE KEY")) || bytes.Contains(data, key[35:75]) {
 		t.Fatal("private key bytes leaked")
 	}
-	if bytes.Contains(data, []byte("ciphertrail:certificate-serial-number")) {
+	if bytes.Contains(data, []byte("cadi:certificate-serial-number")) {
 		t.Fatal("legacy serial-number workaround still emitted")
 	}
 	var bom cdx.BOM
@@ -174,7 +174,7 @@ func TestSameKeyInPEMAndDERKeepsPerOccurrenceFormats(t *testing.T) {
 		}
 		formats := map[string]string{}
 		for _, property := range *component.Properties {
-			if property.Name != "ciphertrail:provenance" {
+			if property.Name != "cadi:provenance" {
 				continue
 			}
 			var record struct{ Occurrence, MaterialFormat string }

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/export/cyclonedx"
-	"ciphertrail/internal/inventory"
+	"cadi/internal/export/cyclonedx"
+	"cadi/internal/inventory"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
@@ -218,7 +218,7 @@ func TestPythonSharedAnalysisHonorsExplicitFilesAndExclusions(t *testing.T) {
 			writeRepositoryFile(t, root, "app.py", "import secrets\nimport hmac\nhmac.new(secrets.token_bytes(32), b'message', digestmod='sha256')\n")
 			writeRepositoryFile(t, root, "tests/patch.py", "import secrets\nsecrets.token_bytes = custom\n")
 			if excluded {
-				writeRepositoryFile(t, root, ".ciphertrailignore", "tests/\n")
+				writeRepositoryFile(t, root, ".cadiignore", "tests/\n")
 			}
 			var stdout, stderr bytes.Buffer
 			code := Run(context.Background(), []string{"scan", root, filepath.Join(root, "tests/patch.py"),
@@ -321,7 +321,7 @@ func TestPythonSharedScopeAndVirtualEnvironments(t *testing.T) {
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "env/app.py", "import hashlib\nhashlib.sha256(b'production')\n")
 	writeRepositoryFile(t, root, "environment/pyvenv.cfg", "home = /unused\n")
-	writeRepositoryFile(t, root, ".ciphertrailignore", "ignored/\n")
+	writeRepositoryFile(t, root, ".cadiignore", "ignored/\n")
 	for _, path := range []string{
 		"environment/dependency.py", "ignored/ignored.py", "excluded/excluded.py", "tests/fixture.py",
 		"test_crypto.py", "crypto_test.py", "conftest.py",

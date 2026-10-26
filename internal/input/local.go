@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"ciphertrail/internal/inventory"
-	"ciphertrail/internal/scope"
+	"cadi/internal/inventory"
+	"cadi/internal/scope"
 )
 
 // Local opens selected local files without following symbolic links.
