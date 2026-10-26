@@ -68,9 +68,9 @@ Runtime options:
                     Optional mTLS identity
   --tls-insecure    Explicitly observe TLS without peer verification
 
-Repository scope reads .cadiignore (and legacy .ciphertrailignore) and excludes generated output, known
-test/dependency directories, and nested Git repositories by default. Explicit
-file inputs can select material inside default-excluded directories.
+Repository scope reads .cadiignore and excludes generated output, known test/dependency
+directories, and nested Git repositories by default. Explicit file inputs can select
+material inside default-excluded directories.
 Helm templates require separately rendered YAML/JSON; charts are not executed.
 Python source analysis requires a trusted Python 3.10+ interpreter on PATH.
 No network discovery, source uploads, policy verdicts, or target execution.

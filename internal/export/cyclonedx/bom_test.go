@@ -337,13 +337,20 @@ func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 	cryptoCount := 0
 	var encodedEvidence provenance
 	var occurrence cdx.EvidenceOccurrence
+	reference := regexp.MustCompile(`^ref-[0-9a-f]{64}$`)
 	for _, component := range *bom.Components {
+		if !reference.MatchString(component.BOMRef) {
+			t.Errorf("component reference is not tool-neutral: %s", component.BOMRef)
+		}
 		if component.Type == cdx.ComponentTypeCryptographicAsset && component.CryptoProperties != nil {
 			cryptoCount++
 			if component.Evidence == nil || component.Evidence.Occurrences == nil || len(*component.Evidence.Occurrences) != 1 {
 				t.Fatal("missing or duplicated native occurrence")
 			}
 			occurrence = (*component.Evidence.Occurrences)[0]
+			if !reference.MatchString(occurrence.BOMRef) {
+				t.Errorf("occurrence reference is not tool-neutral: %s", occurrence.BOMRef)
+			}
 			for _, property := range *component.Properties {
 				if property.Name == "cadi:provenance" {
 					if err := json.Unmarshal([]byte(property.Value), &encodedEvidence); err != nil {

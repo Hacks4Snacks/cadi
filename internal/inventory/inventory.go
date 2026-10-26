@@ -114,16 +114,6 @@ const ToolName = "cadi"
 // ScanReportFormat identifies CADI's execution report, not a CBOM.
 const ScanReportFormat = "CADIScanReport"
 
-// IsToolName recognizes current and pre-rename generator identities.
-func IsToolName(name string) bool {
-	return name == ToolName || name == "ciphertrail"
-}
-
-// IsScanReportFormat recognizes current and pre-rename execution reports.
-func IsScanReportFormat(format string) bool {
-	return format == ScanReportFormat || format == "CipherTrailScanReport"
-}
-
 // Coverage describes analyzer execution and preparation gaps, not cryptographic policy.
 type Coverage struct {
 	Analyzer string `json:"analyzer"`
@@ -148,14 +138,14 @@ type Collection struct {
 	Err       error
 }
 
-// Ref creates a stable, namespaced identifier from non-secret identity attributes.
+// Ref creates a stable, tool-neutral identifier from non-secret identity attributes.
 func Ref(parts ...string) string {
 	hash := sha256.New()
 	for _, part := range parts {
 		hash.Write([]byte(part))
 		hash.Write([]byte{0})
 	}
-	return "urn:cadi:" + hex.EncodeToString(hash.Sum(nil))
+	return "ref-" + hex.EncodeToString(hash.Sum(nil))
 }
 
 // Add attaches evidence and returns the component reference.

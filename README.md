@@ -47,10 +47,6 @@ coverage and diagnostics. The summary goes to stderr.
 For analyzer selection, combined inputs, exclusions, and offline operation, start
 with the [scanning guide](docs/scanning.md).
 
-Renaming an existing CipherTrail checkout does not require changing its directory.
-See the [transition notes](docs/development.md#transition-from-ciphertrail) for
-ignore-file compatibility and changed report identifiers.
-
 ## Releases
 
 Release automation prepares versioned binaries for Linux, macOS, and Windows on

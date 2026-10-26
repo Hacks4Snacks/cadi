@@ -29,10 +29,8 @@ The optional JSON artifact has `reportFormat: "CADIScanReport"` and
 component statistics, and a `collections` array with per-input target, outcome,
 errors, diagnostics, coverage, and structured `details`.
 
-The tool name is `cadi`. Older `CipherTrailScanReport` files remain recognized for
-discovery exclusions and safe output replacement; new reports always use the
-CADI identity. See [transition details](development.md#transition-from-ciphertrail)
-for the related CBOM property and reference-namespace changes.
+The tool name is `cadi`. Existing reports can be replaced only when their format,
+version, and tool identity match.
 
 Directory-associated collections include a `project-subject` detail containing
 the enclosing source-project `bom-ref`. This links overlapping input records and

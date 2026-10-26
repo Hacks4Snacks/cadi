@@ -2,43 +2,33 @@
 
 [Home](../README.md) | [Build and scan](scanning.md) | [Output contract](output.md)
 
-## Transition from CipherTrail
+## Project identity
 
-The project is now **Cryptographic Asset Discovery and Inventory (CADI)**.
+The project is **Cryptographic Asset Discovery and Inventory (CADI)**.
 The executable and local Go module are named `cadi`.
 
-| Surface | Previous name | Current name |
-|---|---|---|
-| Command / build output | `ciphertrail` / `bin/ciphertrail` | `cadi` / `bin/cadi` |
-| Entry point / local module | `cmd/ciphertrail` / `ciphertrail` | `cmd/cadi` / `cadi` |
-| Repository exclusions | `.ciphertrailignore` | `.cadiignore` |
-| CBOM/report generator | `ciphertrail` | `cadi` |
-| Custom properties | `ciphertrail:*` | `cadi:*` |
-| Component and occurrence references | `urn:ciphertrail:*` | `urn:cadi:*` |
-| Execution report format | `CipherTrailScanReport` | `CADIScanReport` |
+| Surface | Identifier |
+|---|---|
+| Command / build output | `cadi` / `bin/cadi` |
+| Entry point / local module | `cmd/cadi` / `cadi` |
+| Repository exclusions | `.cadiignore` |
+| CBOM/report generator | `cadi` |
+| Custom properties | `cadi:*` |
+| Component and occurrence references | `ref-<sha256>` |
+| Execution report format | `CADIScanReport` |
 
-All newly generated output uses CADI identifiers. CycloneDX remains version 1.7,
-execution reports retain `reportVersion: 1`, and document UUIDs/BOM-Links keep
-their standard formats. Changing the reference namespace and property names
-changes generated component/occurrence IDs; consumers must not assume ID equality
-across the rename. Asset consolidation, evidence semantics, and scanner limits
-are unchanged.
+Output uses CADI for tool identity and custom properties, with tool-neutral
+component/occurrence references. CBOMs use CycloneDX 1.7, execution reports use
+`reportVersion: 1`, and document UUIDs/BOM-Links use their standard formats.
 
-For migration, `.ciphertrailignore` remains supported. When both ignore files
-exist, their rules and CLI exclusions are combined, not overridden. Both files
-retain the same validation and output-overwrite protection. Rename your existing
-ignore file to `.cadiignore` when convenient.
+The `.cadiignore` rules and CLI exclusions are combined. The ignore file is
+validated and protected from output overwrites. Existing output can be replaced
+only when it identifies CADI as its generator; scan reports must also use the
+supported format and version. Unrelated files, symlinks, and input/output
+collisions remain protected.
 
-Previously generated CipherTrail CBOMs and scan reports remain recognizable for
-discovery exclusions and safe replacement of explicitly selected output files.
-They are not rewritten merely by scanning their directory. Unknown generators,
-unrelated files, symlinks, and input/output collisions remain protected.
-
-Update scripts to invoke `cadi`; there is no new `ciphertrail` command alias.
 Release archives use names such as `cadi_v0.1.0_linux_amd64.tar.gz`, containing
-`cadi` (`cadi.exe` on Windows). The checkout directory can keep its existing name.
-Repository hosting, remotes, existing generated reports, and installed old
-binaries are not renamed automatically.
+`cadi` (`cadi.exe` on Windows).
 
 ## Build identity
 

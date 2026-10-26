@@ -12,9 +12,8 @@ CADI produces CycloneDX 1.7 JSON. This guide covers:
 - [Document identity](#document-and-primary-component-identity).
 - [Exit codes and safe output files](#exit-codes-and-output-safety).
 
-The project-name transition changes custom properties to `cadi:*` and generated
-references to `urn:cadi:*`. See the [migration contract](development.md#transition-from-ciphertrail)
-before comparing IDs with older CipherTrail output or updating report consumers.
+Custom properties use the `cadi:*` namespace. Generated references instead use
+the tool-neutral `ref-<sha256>` format.
 
 ## Crypto-focused output
 
@@ -147,7 +146,7 @@ For richer evidence, a decoded `cadi:provenance` property can contain:
 
 ```json
 {
-  "occurrence": "urn:cadi:<occurrence-hash>",
+  "occurrence": "ref-<occurrence-hash>",
   "kind": "configured",
   "collector": "go",
   "parameters": [
@@ -303,6 +302,11 @@ Each generated CBOM has a fresh UUIDv4 `serialNumber` (`urn:uuid:...`) and docum
 for empty or incomplete inventories. Document identity is independent of stable
 component and occurrence references; it is not a content hash or the scanner's
 release version.
+
+Generated component and occurrence references are `ref-` followed by a
+64-character lowercase SHA-256 digest of non-secret identity attributes. The
+prefix is independent of the scanner's name; dependency, native cryptographic,
+and provenance links use the same identifiers.
 
 For a directory input, scan orchestration creates one **source-project subject**
 for its selected root. Go modules, Python source, configuration resources, and
