@@ -1522,17 +1522,17 @@ func Run(client *ssh.Client, session *ssh.Session, channel ssh.Channel, key *rsa
 func TestUnknownCryptoOperationsStillProduceDiagnostics(t *testing.T) {
 	directory := fixture(t, `package example
 import ("crypto"; "crypto/x509"; "crypto/tls"; "golang.org/x/crypto/ssh")
-func Run(signer crypto.Signer, certificate *x509.Certificate, key ssh.PublicKey, scheme tls.SignatureScheme) {
+func Run(signer crypto.Signer, certificate *x509.Certificate, sshSigner ssh.Signer, scheme tls.SignatureScheme) {
  _, _ = signer.Sign(nil, nil, crypto.SHA256)
  _ = certificate.CheckSignature(x509.SHA256WithRSA, nil, nil)
- _ = key.Verify(nil, nil)
+ _, _ = sshSigner.Sign(nil, nil)
  _ = scheme.String()
 }`)
 	result, err := (Source{Path: directory}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, symbol := range []string{"crypto.Signer).Sign", "x509.Certificate).CheckSignature", "ssh.PublicKey).Verify", "tls.SignatureScheme).String"} {
+	for _, symbol := range []string{"crypto.Signer).Sign", "x509.Certificate).CheckSignature", "ssh.Signer).Sign", "tls.SignatureScheme).String"} {
 		found := false
 		for _, diagnostic := range result.Diagnostics {
 			if strings.Contains(diagnostic.Message, symbol) {
@@ -1679,6 +1679,135 @@ func Run(private *rsa.PrivateKey, public ssh.PublicKey, a,b *x509.Certificate) {
 	}
 	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSSHSignatureSerializationAndSystemCertificatePool(t *testing.T) {
+	directory := fixture(t, `package example
+import (
+ mac "crypto/hmac"
+ certs "crypto/x509"
+ ssh "golang.org/x/crypto/ssh"
+)
+type Public = ssh.PublicKey
+type unrelated struct{}
+func (unrelated) Marshal() []byte { return nil }
+func (unrelated) Verify([]byte, *ssh.Signature) error { return nil }
+func Run(key Public, signature *ssh.Signature, output any) {
+ _ = ssh.Unmarshal([]byte("PRIVATE_WIRE_SENTINEL"), output)
+ _ = mac.Equal([]byte("PRIVATE_MAC_SENTINEL"), nil)
+ _ = key.Marshal()
+ _ = Public.Marshal(key)
+ _ = key.Verify([]byte("PRIVATE_MESSAGE_SENTINEL"), signature)
+ _ = Public.Verify(key, nil, signature)
+ _, _ = certs.SystemCertPool()
+ _ = unrelated{}.Marshal()
+ _ = unrelated{}.Verify(nil, signature)
+}`)
+	result, err := (Source{Path: directory, Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("reported APIs remain coverage gaps: %+v", result.Diagnostics)
+	}
+	names := map[string]string{}
+	for _, entry := range result.Entries {
+		names[entry.Component.BOMRef] = entry.Component.Name
+	}
+	counts := map[string]int{}
+	for _, entry := range result.Entries {
+		p := entry.Component.CryptoProperties
+		if p == nil {
+			continue
+		}
+		counts[entry.Component.Name]++
+		if entry.Evidence.Kind != "configured" || entry.Evidence.Collector != "go" ||
+			entry.Evidence.Location != "main.go" || entry.Evidence.Line == 0 || entry.Parent == "" {
+			t.Fatalf("missing configured source/ownership evidence: %+v", entry.Evidence)
+		}
+		provider := "golang.org/x/crypto"
+		switch entry.Component.Name {
+		case "Public key serialization":
+			key := p.RelatedCryptoMaterialProperties
+			if p.AssetType != cdx.CryptoAssetTypeRelatedCryptoMaterial || key == nil ||
+				key.Type != cdx.RelatedCryptoMaterialTypePublicKey || key.Value != "" || key.Size != nil || key.ID != "" {
+				t.Fatal("serialization invented key material or parameters")
+			}
+			if !strings.Contains(entry.Evidence.Symbol, "ssh.PublicKey).Marshal") {
+				t.Fatal("serialization lost the resolved API symbol")
+			}
+		case "SSH signature verification":
+			a := p.AlgorithmProperties
+			if p.AssetType != cdx.CryptoAssetTypeAlgorithm || a == nil || a.Primitive != cdx.CryptoPrimitiveSignature ||
+				a.CryptoFunctions == nil || !slices.Equal(*a.CryptoFunctions, []cdx.CryptoFunction{cdx.CryptoFunctionVerify}) ||
+				a.AlgorithmFamily != "" || a.ParameterSetIdentifier != "" || a.EllipticCurve != "" || p.OID != "" ||
+				!slices.Contains(entry.Evidence.Unresolved, "algorithm") || !slices.Contains(entry.Evidence.Unresolved, "key-size-bits") {
+				t.Fatal("signature verification inferred an algorithm, key size, or incorrect operation")
+			}
+			if !strings.Contains(entry.Evidence.Symbol, "ssh.PublicKey).Verify") {
+				t.Fatal("verification lost the resolved API symbol")
+			}
+		case "X.509 system certificate pool":
+			provider = "Go standard library"
+			certificate := p.CertificateProperties
+			if p.AssetType != cdx.CryptoAssetTypeCertificate || certificate == nil || certificate.CertificateFormat != "X.509" ||
+				certificate.SubjectName != "" || certificate.IssuerName != "" || certificate.SerialNumber != "" ||
+				certificate.RelatedCryptographicAssets != nil || entry.Component.Hashes != nil {
+				t.Fatal("system certificate loading invented actual certificates or trust material")
+			}
+			if !strings.Contains(entry.Evidence.Symbol, "crypto/x509.SystemCertPool") {
+				t.Fatal("system certificate loading lost the resolved API symbol")
+			}
+		default:
+			t.Fatalf("helper or unrelated method created an asset: %s", entry.Component.Name)
+		}
+		linked := false
+		for _, dependency := range result.Dependencies {
+			linked = linked || dependency.Source == entry.Component.BOMRef && names[dependency.Target] == provider
+		}
+		if !linked {
+			t.Errorf("%s lost its provider dependency", entry.Component.Name)
+		}
+	}
+	if len(counts) != 3 || counts["Public key serialization"] != 2 || counts["SSH signature verification"] != 2 ||
+		counts["X.509 system certificate pool"] != 1 {
+		t.Fatalf("wrong operation counts: %v", counts)
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_") {
+			t.Fatalf("invalid or unsafe API model output: %v", err)
+		}
+	}
+}
+
+func TestSSHUnmarshalAndHMACEqualAreExactNonAssetHelpers(t *testing.T) {
+	for _, api := range []apiIdentity{
+		{"golang.org/x/crypto/ssh", "", "Unmarshal"},
+		{"crypto/hmac", "", "Equal"},
+	} {
+		if !nonAssetAPI(api) {
+			t.Errorf("non-asset helper remains a gap: %+v", api)
+		}
+		for _, other := range []apiIdentity{
+			{"example.test/other", api.receiver, api.name},
+			{api.path, "OtherReceiver", api.name},
+			{api.path, api.receiver, api.name + "Other"},
+		} {
+			if nonAssetAPI(other) {
+				t.Errorf("helper classification was not exact: %+v", other)
+			}
+		}
+	}
+	for _, api := range []apiIdentity{
+		{"golang.org/x/crypto/ssh", "PublicKey", "Marshal"},
+		{"golang.org/x/crypto/ssh", "PublicKey", "Verify"},
+		{"crypto/x509", "", "SystemCertPool"},
+	} {
+		if nonAssetAPI(api) {
+			t.Errorf("cryptographic operation was hidden as a helper: %+v", api)
+		}
 	}
 }
 

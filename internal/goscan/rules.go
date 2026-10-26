@@ -71,6 +71,8 @@ func nonAssetAPI(api apiIdentity) bool {
 		apiIdentity{"crypto/ecdsa", "PublicKey", "Equal"},
 		apiIdentity{"crypto/mldsa", "PublicKey", "Equal"},
 		apiIdentity{"crypto/subtle", "", "ConstantTimeCompare"},
+		apiIdentity{"crypto/hmac", "", "Equal"},
+		apiIdentity{"golang.org/x/crypto/ssh", "", "Unmarshal"},
 		apiIdentity{"crypto/x509", "Certificate", "VerifyHostname"},
 		apiIdentity{"crypto/tls", "Config", "Clone"},
 		apiIdentity{"crypto/tls", "Conn", "Close"},
@@ -116,6 +118,10 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 	case apiIdentity{"crypto/x509", "CertPool", "AppendCertsFromPEM"},
 		apiIdentity{"crypto/x509", "CertPool", "AddCert"}:
 		return operation("X.509 certificate import", cdx.CryptoAssetTypeCertificate), true
+	case apiIdentity{"crypto/x509", "", "SystemCertPool"}:
+		c := inventory.ConfiguredCertificate("X.509 system certificate pool", "", nil)
+		inventory.Property(&c, "scope", "configured system certificate loading; certificate contents, trust, and successful loading are not established")
+		return c, true
 	case apiIdentity{"crypto/x509", "Certificate", "Verify"}:
 		c := inventory.ConfiguredCertificate("X.509 certificate verification", "", nil)
 		inventory.Property(&c, "scope", "configured chain validation request; trust, revocation checking, and verification success are not established")
@@ -182,8 +188,14 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		return c, true
 	case apiIdentity{"crypto/tls", "", "NewListener"}:
 		return protocol("TLS", cdx.CryptoProtocolTypeTLS), true
-	case apiIdentity{"golang.org/x/crypto/ssh", "", "MarshalAuthorizedKey"}:
+	case apiIdentity{"golang.org/x/crypto/ssh", "", "MarshalAuthorizedKey"},
+		apiIdentity{"golang.org/x/crypto/ssh", "PublicKey", "Marshal"}:
 		return keyOperation("Public key serialization"), true
+	case apiIdentity{"golang.org/x/crypto/ssh", "PublicKey", "Verify"}:
+		c := inventory.Algorithm("SSH signature verification", cdx.CryptoPrimitiveSignature)
+		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionVerify}
+		evidence.Unresolved = append(evidence.Unresolved, "algorithm", "key-size-bits")
+		return c, true
 	case apiIdentity{"golang.org/x/crypto/ssh", "Channel", "Read"},
 		apiIdentity{"golang.org/x/crypto/ssh", "Channel", "Write"},
 		apiIdentity{"golang.org/x/crypto/ssh", "Client", "NewSession"},
