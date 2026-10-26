@@ -409,7 +409,8 @@ def analyze(source: bytes) -> dict[str, Any]:
                          "value": index.resolve(value, scope, set())})
     if index.limited:
         index.issues.append({"line": 0, "message": "bounded expression-resolution limit reached"})
-    return {"calls": calls, "settings": settings, "mutations": sorted(index.mutations), "issues": index.issues}
+    return {"calls": calls, "settings": settings, "mutations": sorted(index.mutations),
+            "issues": index.issues, "truncated": index.limited}
 
 
 def main() -> None:

@@ -44,7 +44,7 @@ func (r resource) ingress(spec *yaml.Node) error {
 				{Name: "kubernetes.secret-name", Value: secretName},
 				{Name: "scope", Value: "declared Secret reference only; target existence and certificate material are not established"},
 			}
-			if namespace := r.evidence.Context.Resource.Namespace; namespace != "" {
+			if namespace := r.identity().Namespace; namespace != "" {
 				parameters = append(parameters, inventory.Attribute{Name: "kubernetes.namespace", Value: namespace})
 			}
 			ref := r.result.Add(inventory.ConfiguredCertificate("Kubernetes certificate reference", "", parameters),

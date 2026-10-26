@@ -61,6 +61,10 @@ func instance(v *value) string {
 		return name
 	case primitives + "hmac.HMAC":
 		return name
+	case primitives + "cmac.CMAC", primitives + "cmac.CMAC.copy":
+		return primitives + "cmac.CMAC"
+	case "argon2.PasswordHasher":
+		return name
 	case "cryptography.hazmat.primitives.ciphers.Cipher":
 		return name
 	case "cryptography.hazmat.primitives.ciphers.Cipher.encryptor", "cryptography.hazmat.primitives.ciphers.Cipher.decryptor":
@@ -78,7 +82,7 @@ func instance(v *value) string {
 			return primitives + public
 		}
 	}
-	if _, known := kdfNames[strings.TrimPrefix(name, primitives)]; known {
+	if _, known := kdfModels[strings.TrimPrefix(name, primitives)]; known {
 		return name
 	}
 	for _, builder := range []string{"cryptography.x509.CertificateBuilder", "cryptography.x509.CertificateSigningRequestBuilder"} {
@@ -109,14 +113,21 @@ func instance(v *value) string {
 	return ""
 }
 
-func argument(v value, index int, name string) value {
+func argumentsExpanded(v value) bool {
 	if _, expanded := v.Keywords["**"]; expanded {
-		return value{}
+		return true
 	}
 	for _, argument := range v.Args {
 		if argument.Kind == "unpack" {
-			return value{}
+			return true
 		}
+	}
+	return false
+}
+
+func argument(v value, index int, name string) value {
+	if argumentsExpanded(v) {
+		return value{}
 	}
 	if arg, ok := v.Keywords[name]; ok {
 		if index >= 0 && index < len(v.Args) {
@@ -210,11 +221,18 @@ func length(v value) (int64, bool) {
 			return bits / 8, known && bits > 0 && bits%8 == 0 && bits <= maxSourceBytes*8
 		case "cryptography.hazmat.primitives.ciphers.aead.ChaCha20Poly1305.generate_key":
 			return 32, true
+		case "bcrypt.kdf":
+			size, known := integer(argument(v, 2, "desired_key_bytes"))
+			return size, known && len(v.Modified) == 0 && size >= 0 && size <= maxSourceBytes
 		}
 		if strings.HasSuffix(name, ".derive") {
 			class := strings.TrimSuffix(strings.TrimPrefix(name, primitives), ".derive")
-			if _, known := kdfNames[class]; known {
-				size, known := integer(argument(receiver(v), 1, "length"))
+			if model, known := kdfModels[class]; known {
+				constructor := receiver(v)
+				if len(constructor.Modified) != 0 || len(v.Modified) != 0 {
+					return 0, false
+				}
+				size, known := integer(argument(constructor, model.lengthIndex, "length"))
 				return size, known && size >= 0 && size <= maxSourceBytes
 			}
 		}
@@ -224,6 +242,16 @@ func length(v value) (int64, bool) {
 
 func literalText(v value) (string, bool) {
 	return v.Text, v.Kind == "string" && v.Length == int64(len([]rune(v.Text)))
+}
+
+func canonicalCryptoName(name string) string {
+	if name == "argon2.Type" {
+		return "argon2.low_level.Type"
+	}
+	if suffix, found := strings.CutPrefix(name, "argon2.Type."); found {
+		return "argon2.low_level.Type." + suffix
+	}
+	return name
 }
 
 func invalidate(v value, shadowed map[string]bool, mutations []string) value {

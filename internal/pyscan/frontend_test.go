@@ -3,6 +3,7 @@ package pyscan
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,123 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPythonExpressionLimitsPreservePartialFindings(t *testing.T) {
+	depth := "import hashlib\nhashlib.sha256(b'PRIVATE_SENTINEL')\na0 = hashlib.sha512\n"
+	for index := 1; index <= 40; index++ {
+		depth += fmt.Sprintf("a%d = a%d\n", index, index-1)
+	}
+	depth += "a40(b'value')\n"
+	values := "import hashlib\nhashlib.sha256(b'PRIVATE_SENTINEL')\na0 = b'value'\n"
+	for index := 1; index <= 25; index++ {
+		values += fmt.Sprintf("a%d = a%d\n", index, index-1)
+	}
+	values += strings.Repeat("consume(a25)\n", 9000)
+	for _, test := range []struct{ name, source string }{
+		{"depth", depth},
+		{"values", values},
+		{"arguments", "import hashlib\nhashlib.sha256(b'PRIVATE_SENTINEL')\nconsume(" + strings.Repeat("1,", 65) + ")\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selection := fixture(t, map[string]string{"limited.py": test.source, "other.py": "import hashlib\nhashlib.sha384(b'value')\n"})
+			result, err := (Source{Selection: selection}).Collect(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "limit") || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
+				t.Fatalf("truncated analysis did not fail explicitly: %v", err)
+			}
+			names := map[string]bool{}
+			for _, entry := range result.Entries {
+				names[entry.Component.Name] = true
+			}
+			if !names["SHA-256"] || !names["SHA-384"] || result.Coverage[0].Status != "failed" || result.Coverage[0].Files != 2 {
+				t.Fatalf("partial file evidence or failed coverage lost: %v %+v", names, result.Coverage)
+			}
+		})
+	}
+}
+
+func TestTruncatedPythonFilesStillContributeMutationFacts(t *testing.T) {
+	selection := fixture(t, map[string]string{
+		"a.py":       "import hashlib\nhashlib.sha256(b'value')\n",
+		"z_patch.py": "import hashlib\nhashlib.sha256 = replacement\nconsume(" + strings.Repeat("1,", 65) + ")\n",
+	})
+	result, err := (Source{Selection: selection}).Collect(context.Background())
+	if !errors.Is(err, errAnalysisTruncated) || result.Coverage[0].Status != "failed" {
+		t.Fatalf("truncation was not propagated: %v %+v", err, result.Coverage)
+	}
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties != nil {
+			t.Fatal("discarded mutations from a truncated file produced a guessed crypto finding")
+		}
+	}
+}
+
+func TestUnsupportedPythonExpressionsRemainQualifiedUnknowns(t *testing.T) {
+	selection := fixture(t, map[string]string{"app.py": "import hashlib\nhashlib.new(select_algorithm())\n"})
+	result, err := (Source{Selection: selection}).Collect(context.Background())
+	if err != nil || result.Coverage[0].Status != "completed" {
+		t.Fatalf("unsupported expression was confused with budget exhaustion: %v %+v", err, result.Coverage)
+	}
+}
+
+const hashFrontendResponse = `{"protocol":1,"version":"3.10.0","calls":[{"line":2,"value":{"kind":"call","base":{"kind":"symbol","text":"hashlib.sha256"}}}],"settings":[],"mutations":[],"issues":[],"truncated":false}`
+
+func TestPythonAggregateFactBudget(t *testing.T) {
+	selection := fixture(t, map[string]string{
+		"a.py": "import hashlib\nhashlib.sha256(b'value')\n",
+		"b.py": "import hashlib\nhashlib.sha256(b'value')\n",
+	})
+	source := Source{Selection: selection, interpreter: trustedInterpreter(t, "printf '%s' '"+hashFrontendResponse+"'")}
+	size := len(hashFrontendResponse)
+	for _, test := range []struct {
+		name                          string
+		limit, files, skipped, hashes int
+		fail                          bool
+	}{
+		{"exact-total", 2 * size, 2, 0, 2, false},
+		{"one-byte-over", 2*size - 1, 2, 1, 1, true},
+		{"exact-first", size, 1, 1, 1, true},
+		{"first-cannot-fit", size - 1, 1, 2, 0, true},
+		{"empty-budget", 0, 0, 2, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := source.collect(context.Background(), test.limit, collectionTimeout)
+			if (err != nil) != test.fail || test.fail && !strings.Contains(err.Error(), "retained-fact budget") {
+				t.Fatalf("incorrect budget outcome: %v", err)
+			}
+			hashes := 0
+			for _, entry := range result.Entries {
+				if entry.Component.Name == "SHA-256" {
+					hashes++
+				}
+			}
+			coverage := result.Coverage[0]
+			if hashes != test.hashes || coverage.Files != test.files || coverage.Skipped != test.skipped ||
+				(coverage.Status == "failed") != test.fail || test.fail && !strings.Contains(coverage.Reason, "retained-fact budget") {
+				t.Errorf("incorrect partial evidence/coverage: hashes=%d %+v", hashes, coverage)
+			}
+		})
+	}
+}
+
+func TestPythonCollectionDeadlinePreservesCompletedFiles(t *testing.T) {
+	selection := fixture(t, map[string]string{
+		"a.py": "import hashlib\nhashlib.sha256(b'value')\n",
+		"b.py": "# slow\nimport hashlib\nhashlib.sha256(b'value')\n",
+		"c.py": "import hashlib\nhashlib.sha256(b'value')\n",
+	})
+	script := "IFS= read -r first\nif [ \"$first\" = '# slow' ]; then exec sleep 20; fi\nprintf '%s' '" + hashFrontendResponse + "'"
+	source := Source{Selection: selection, interpreter: trustedInterpreter(t, script)}
+	start := time.Now()
+	result, err := source.collect(context.Background(), maxCollectedFactBytes, 2*time.Second)
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Fatalf("collection deadline did not stop the frontend: %v", err)
+	}
+	coverage := result.Coverage[0]
+	if coverage.Status != "failed" || coverage.Files != 2 || coverage.Skipped != 1 || coverage.Findings != 1 ||
+		!strings.Contains(coverage.Reason, "time limit") {
+		t.Fatalf("deadline lost earlier evidence or hid skipped files: %+v", coverage)
+	}
+}
 
 func TestPythonSyntaxErrorsArePartialAndSanitized(t *testing.T) {
 	selection := fixture(t, map[string]string{

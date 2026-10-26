@@ -26,10 +26,13 @@ Python analysis never uses an interpreter from an image.
 - `ssl`: context creation, wrapping APIs, declared TLS minima/maxima, verification
   settings, OpenSSL cipher selectors, and certificate/key/CA file references.
   These are configured settings, not negotiated versions or cipher suites.
-- `cryptography`: common hash/HMAC APIs; RSA, EC, Ed25519/Ed448, and X25519/X448
-  key generation; supported signature operations; AES and common block modes,
-  AEAD and Fernet; PBKDF2/HKDF/scrypt; X.509 imports and certificate/CSR builder
-  signing; and private/public key imports.
+- `cryptography`: common hash/HMAC and CMAC APIs; RSA, EC, Ed25519/Ed448, and
+  X25519/X448 key generation; supported signature and key-agreement operations;
+  AES and common block modes, key wrapping, AEAD, and Fernet;
+  PBKDF2/HKDF/scrypt/Argon2; X.509 imports and certificate/CSR builder signing;
+  and private/public key imports.
+- `bcrypt`: password hashing/verification and bcrypt-PBKDF.
+- `argon2`: `PasswordHasher` configuration, hashing, and verification.
 - `Crypto` and `Cryptodome`: common hash/HMAC constructors, AES configuration
   and encryption/decryption entry points, RSA/ECC generation, and random bytes.
 - HTTP clients: selected Requests, HTTPX, urllib3, and standard-library request
@@ -39,6 +42,50 @@ Coverage is an explicit API model set, not complete coverage of those libraries.
 Resolved but unmodeled crypto APIs produce file/line diagnostics. Known metadata
 and lifecycle calls are classified by exact symbol rather than broad method-name
 suppression. Algorithms are not inferred from arbitrary function names.
+
+## Key agreement, wrapping, and CMAC
+
+X25519/X448 private-key `exchange` calls record key-agreement intent with the
+API's curve identity. EC `exchange` records ECDH when its selector is explicit,
+and retains a curve only when a visible key-generation/derivation constructor
+establishes it. An opaque selector remains generic elliptic-curve key agreement.
+No shared-secret bytes, peer key contents, or successful handshake are inferred.
+
+The four `keywrap.aes_key_wrap/unwrap` APIs, including their `_with_padding`
+variants, use the native `key-wrap` primitive. AES-KW and AES-KWP have distinct
+names and registered OIDs. Key size describes the wrapping key, not the wrapped
+payload. Unknown or mutable key lengths do not receive a guessed OID; KWP is
+not labeled as PKCS#7 padding.
+
+CMAC construction, `finalize`, and `verify` retain tag-generation or verification
+intent. Visible block-cipher constructors can establish the underlying algorithm
+and key length; stream ciphers and opaque algorithms do not establish CMAC
+parameters. `copy` preserves visible constructor context, while `update` and
+`copy` do not create standalone cryptographic operations.
+
+## Password hashing and KDFs
+
+- `bcrypt.hashpw` records explicitly supplied `gensalt(rounds=...)` cost.
+  `gensalt` alone is not a password-hashing finding, and its default cost is not
+  assumed. `checkpw` records verification without decoding the stored hash.
+- `bcrypt.kdf` is bcrypt-PBKDF: its linear `rounds` and requested output length
+  are distinct from the logarithmic password-hashing cost.
+- `argon2.PasswordHasher` and `hash` retain explicit variant, iteration count,
+  memory cost in KiB, parallelism, and requested hash/salt lengths. Omitted
+  version-dependent defaults stay unspecified. A per-call salt overrides the
+  configured salt length; an unknown or expanded override keeps that length
+  unresolved.
+- `PasswordHasher.verify` selects parameters from the encoded hash. It does
+  **not** inherit the hasher's configured variant or cost settings.
+  `check_needs_rehash` is metadata comparison, not a cryptographic operation.
+- `cryptography`'s `Argon2id`, `Argon2i`, and `Argon2d` constructors and
+  `derive/verify` calls retain explicit keyword-only parameters. Known output
+  lengths can feed subsequent modeled cipher constructors.
+
+Argon2 variants have no invented `algorithmFamily` value when the CycloneDX
+registry lacks one. Passwords, encoded hashes, keys, salts, and messages are not
+exported or hashed into identifiers. These models do not verify credentials or
+assert that a requested operation is valid or succeeded.
 
 ## HTTP clients and URL schemes
 
@@ -125,8 +172,30 @@ not opened, and certificate signing declarations are not issued certificates.
 Parsing is bounded to 8 MiB per source file, 100,000 AST nodes, 32 expression
 levels, 200,000 resolved value visits, 64 arguments per call, and a 16 MiB frontend
 response. Each file has a 10-second frontend deadline and supports cancellation.
+Expression-budget exhaustion is a typed truncation outcome, not ordinary
+unsupported value flow: valid partial facts and mutation information from that
+file are retained, but coverage is `failed`, the CBOM and scan report are
+`incomplete`, the human summary is marked `INCOMPLETE`, and the CLI exits 1.
+Ordinary unsupported expressions remain qualified unknowns without failing an
+otherwise completed analysis.
+
+Each shared Python analysis also has a 128 MiB aggregate retained-fact budget,
+measured in frontend JSON response bytes, and a 10-minute frontend collection
+deadline. The remaining aggregate byte allowance limits each subprocess's output
+before decoding. On exhaustion, collection stops; already collected facts are
+modeled together with their shared mutation information, unprocessed files are
+counted as skipped, and the limit is reported as failed coverage. A file whose
+response exceeds the remaining allowance is counted as both attempted and
+skipped because it was inspected but its analysis was not retained.
+
+These are collection budgets, not a process-RSS ceiling or an end-to-end scan
+deadline. Decoded Go objects, the current interpreter, inventory construction,
+and CBOM encoding/validation have additional costs. Interpreter startup remains
+one isolated process per selected file; no target imports or worker pooling are
+introduced. Caller cancellation also interrupts finding construction.
+
 Syntax, source-encoding, interpreter, and resource-limit errors are operational
-failures: successful files remain in the partial CBOM, with detailed failed
+failures. Valid evidence remains in the partial CBOM, with detailed failed
 coverage in the [scan report](scan-report.md) and stderr.
 The host interpreter must understand the selected source syntax; Python 3.10 is
 the frontend minimum, not a promise that it parses every newer Python release.

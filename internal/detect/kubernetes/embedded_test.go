@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -155,6 +156,56 @@ func TestEmbeddedNonResourcesAreNotInventedManifests(t *testing.T) {
 		data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 		if err != nil || strings.Contains(string(data), "PRIVATE_") {
 			t.Fatalf("non-resource contents escaped into the inventory: %v", err)
+		}
+	}
+}
+
+func TestEmbeddedIngressUsesItsOwnNamespace(t *testing.T) {
+	for depth := 0; depth <= 2; depth++ {
+		for _, namespace := range []string{"inner", ""} {
+			t.Run(fmt.Sprintf("depth=%d/namespace=%s", depth, namespace), func(t *testing.T) {
+				metadata := map[string]string{"name": "ingress"}
+				if namespace != "" {
+					metadata["namespace"] = namespace
+				}
+				data, err := json.Marshal(map[string]any{
+					"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": metadata,
+					"spec": map[string]any{"tls": []map[string]string{{"secretName": "application-tls"}}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				document := string(data)
+				for range depth {
+					document = configMapDocument(t, document, false)
+				}
+				result, err := collectManifest(t, document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, entry := range result.Entries {
+					if entry.Component.Name != "Kubernetes certificate reference" {
+						continue
+					}
+					found = true
+					got, present := "", false
+					for _, property := range *entry.Component.Properties {
+						if property.Name == "ciphertrail:kubernetes.namespace" {
+							got, present = property.Value, true
+						}
+					}
+					if got != namespace || present != (namespace != "") {
+						t.Errorf("certificate reference inherited the wrong namespace: %q, present=%v", got, present)
+					}
+				}
+				if !found {
+					t.Fatal("Ingress certificate reference missing")
+				}
+				if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }

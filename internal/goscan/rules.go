@@ -99,6 +99,27 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		return nil
 	}
 	switch api {
+	case apiIdentity{"crypto", "Signer", "Sign"}:
+		c := inventory.Algorithm("Signature operation", cdx.CryptoPrimitiveSignature)
+		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionSign}
+		evidence.Unresolved = append(evidence.Unresolved, "algorithm", "key-size-bits")
+		return c, true
+	case apiIdentity{"crypto", "Decrypter", "Decrypt"}:
+		c := inventory.Algorithm("Public-key decryption", cdx.CryptoPrimitivePKE)
+		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionDecrypt}
+		evidence.Unresolved = append(evidence.Unresolved, "algorithm", "key-size-bits")
+		return c, true
+	case apiIdentity{"crypto/cipher", "Block", "Encrypt"},
+		apiIdentity{"crypto/cipher", "Block", "Decrypt"}:
+		c := blockAlgorithm([]ssa.Value{callReceiver(call)}, values, evidence)
+		function := cdx.CryptoFunctionEncrypt
+		if api.name == "Decrypt" {
+			function = cdx.CryptoFunctionDecrypt
+		}
+		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{function}
+		return c, true
+	case apiIdentity{"crypto/cipher", "Stream", "XORKeyStream"}:
+		return streamOperation(call, values, evidence), true
 	case apiIdentity{"crypto", "Signer", "Public"},
 		apiIdentity{"crypto", "Decrypter", "Public"},
 		apiIdentity{"crypto/ecdh", "PrivateKey", "PublicKey"},
@@ -553,6 +574,96 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 	}
 	return cdx.Component{}, false
+}
+
+func blockAlgorithm(receivers []ssa.Value, values *values, evidence *inventory.Evidence) cdx.Component {
+	unknown := func() cdx.Component {
+		evidence.Unresolved = append(evidence.Unresolved, "underlying-algorithm", "key-size-bits")
+		return inventory.Algorithm("Block cipher operation", cdx.CryptoPrimitiveBlockCipher)
+	}
+	var common cdx.Component
+	for _, receiver := range receivers {
+		calls := constructorCalls(receiver)
+		if len(calls) == 0 {
+			return unknown()
+		}
+		for _, call := range calls {
+			api := calledAPI(call)
+			switch api {
+			case apiIdentity{"crypto/aes", "", "NewCipher"},
+				apiIdentity{"crypto/des", "", "NewCipher"},
+				apiIdentity{"crypto/des", "", "NewTripleDESCipher"}:
+			default:
+				return unknown()
+			}
+			var details inventory.Evidence
+			candidate, matched := recognize(api.path, api.name, call, values, &details)
+			if !matched {
+				return unknown()
+			}
+			if common.CryptoProperties == nil {
+				common = candidate
+				continue
+			}
+			a, next := common.CryptoProperties.AlgorithmProperties, candidate.CryptoProperties.AlgorithmProperties
+			if a.AlgorithmFamily != next.AlgorithmFamily {
+				return unknown()
+			}
+			if a.ParameterSetIdentifier != next.ParameterSetIdentifier {
+				a.ParameterSetIdentifier = ""
+			}
+		}
+	}
+	if common.CryptoProperties == nil {
+		return unknown()
+	}
+	if common.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier == "" {
+		evidence.Unresolved = append(evidence.Unresolved, "key-size-bits")
+	}
+	return common
+}
+
+func streamOperation(call *ssa.CallCommon, values *values, evidence *inventory.Evidence) cdx.Component {
+	receiver := callReceiver(call)
+	models := map[apiIdentity]struct {
+		mode     cdx.CryptoAlgorithmMode
+		function cdx.CryptoFunction
+	}{
+		{"crypto/cipher", "", "NewCTR"}:          {cdx.CryptoAlgorithmModeCTR, ""},
+		{"crypto/cipher", "", "NewOFB"}:          {cdx.CryptoAlgorithmModeOFB, ""},
+		{"crypto/cipher", "", "NewCFBEncrypter"}: {cdx.CryptoAlgorithmModeCFB, cdx.CryptoFunctionEncrypt},
+		{"crypto/cipher", "", "NewCFBDecrypter"}: {cdx.CryptoAlgorithmModeCFB, cdx.CryptoFunctionDecrypt},
+	}
+	model, known := models[constructorAPI(receiver)]
+	if !known {
+		evidence.Unresolved = append(evidence.Unresolved, "underlying-algorithm", "mode", "crypto-function")
+		return inventory.Algorithm("Stream cipher operation", cdx.CryptoPrimitiveStreamCipher)
+	}
+	var blocks []ssa.Value
+	for _, constructor := range constructorCalls(receiver) {
+		if len(constructor.Args) == 0 {
+			blocks = append(blocks, nil)
+		} else {
+			blocks = append(blocks, constructor.Args[0])
+		}
+	}
+	c := blockAlgorithm(blocks, values, evidence)
+	a := c.CryptoProperties.AlgorithmProperties
+	a.Mode = model.mode
+	if a.AlgorithmFamily == "" {
+		c.Name = "Block cipher (" + strings.ToUpper(string(model.mode)) + ")"
+	} else {
+		c.Name += "-" + strings.ToUpper(string(model.mode))
+	}
+	if model.function != "" {
+		a.CryptoFunctions = &[]cdx.CryptoFunction{model.function}
+	} else {
+		evidence.Unresolved = append(evidence.Unresolved, "crypto-function")
+	}
+	if a.AlgorithmFamily == "AES" {
+		c.CryptoProperties.OID = inventory.AESOID(model.mode, a.ParameterSetIdentifier)
+	}
+	return c
 }
 
 func callReceiver(call *ssa.CallCommon) ssa.Value {

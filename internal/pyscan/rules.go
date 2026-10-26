@@ -27,11 +27,16 @@ func hashName(name string) string {
 	return hashes[name]
 }
 
+var cryptoNamespaces = []string{
+	"hashlib", "hmac", "ssl", "secrets", "cryptography", "Crypto", "Cryptodome",
+	"OpenSSL", "jwt", "paramiko", "bcrypt", "argon2",
+}
+
 func cryptoNamespace(name string) bool {
 	if name == "os.urandom" {
 		return true
 	}
-	for _, root := range []string{"hashlib", "hmac", "ssl", "secrets", "cryptography", "Crypto", "Cryptodome", "OpenSSL", "jwt", "paramiko"} {
+	for _, root := range cryptoNamespaces {
 		if name == root || strings.HasPrefix(name, root+".") {
 			return true
 		}
@@ -75,7 +80,9 @@ func nonAsset(name string) bool {
 	switch name {
 	case "hmac.compare_digest", "secrets.compare_digest", "cryptography.hazmat.primitives.constant_time.bytes_eq",
 		"cryptography.hazmat.primitives.ciphers.Cipher", "ssl.SSLContext.load_default_certs",
-		"ssl.SSLContext.get_ciphers", "ssl.PEM_cert_to_DER_cert", "ssl.DER_cert_to_PEM_cert":
+		"ssl.SSLContext.get_ciphers", "ssl.PEM_cert_to_DER_cert", "ssl.DER_cert_to_PEM_cert",
+		primitives + "cmac.CMAC.update", primitives + "cmac.CMAC.copy",
+		"bcrypt.gensalt", "argon2.PasswordHasher.check_needs_rehash":
 		return true
 	}
 	return false
@@ -204,6 +211,9 @@ func recognize(name string, call value, evidence *inventory.Evidence) (cdx.Compo
 	}
 	if strings.HasPrefix(name, "ssl.") {
 		return sslCall(name, call, evidence)
+	}
+	if strings.HasPrefix(name, "bcrypt.") || strings.HasPrefix(name, "argon2.") {
+		return passwordCall(name, call, evidence)
 	}
 	if strings.HasPrefix(name, "cryptography.") {
 		return cryptographyCall(name, call, evidence)

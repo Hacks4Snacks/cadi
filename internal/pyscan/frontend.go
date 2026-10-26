@@ -21,6 +21,9 @@ const maxSourceBytes = 8 << 20
 const maxFrontendBytes = 16 << 20
 const frontendTimeout = 10 * time.Second
 
+var errAnalysisTruncated = errors.New("Python expression-resolution limit reached; analysis is incomplete")
+var errFrontendOutputLimit = errors.New("Python frontend exceeded its output limit")
+
 type value struct {
 	Kind     string           `json:"kind"`
 	Text     string           `json:"text"`
@@ -53,6 +56,7 @@ type parsedFile struct {
 	Calls     []call    `json:"calls"`
 	Settings  []setting `json:"settings"`
 	Mutations []string  `json:"mutations"`
+	Truncated bool      `json:"truncated"`
 	Issues    []struct {
 		Line    int    `json:"line"`
 		Message string `json:"message"`
@@ -61,6 +65,7 @@ type parsedFile struct {
 		Kind string `json:"kind"`
 		Line int    `json:"line"`
 	} `json:"error"`
+	encodedBytes int
 }
 
 type boundedBuffer struct {
@@ -80,6 +85,10 @@ func (b *boundedBuffer) Write(data []byte) (int, error) {
 }
 
 func parse(ctx context.Context, interpreter string, source []byte) (parsedFile, error) {
+	return parseBounded(ctx, interpreter, source, maxFrontendBytes)
+}
+
+func parseBounded(ctx context.Context, interpreter string, source []byte, outputLimit int) (parsedFile, error) {
 	var result parsedFile
 	if len(source) > maxSourceBytes {
 		return result, fmt.Errorf("Python source exceeds the %d-byte limit", maxSourceBytes)
@@ -93,12 +102,15 @@ func parse(ctx context.Context, interpreter string, source []byte) (parsedFile, 
 	command.Dir = os.TempDir()
 	command.Stdin = bytes.NewReader(source)
 	command.WaitDelay = time.Second
-	stdout := &boundedBuffer{limit: maxFrontendBytes, cancel: cancel}
+	stdout := &boundedBuffer{limit: outputLimit, cancel: cancel}
 	stderr := &boundedBuffer{limit: 64 << 10, cancel: cancel}
 	command.Stdout, command.Stderr = stdout, stderr
 	err := command.Run()
-	if stdout.exceeded || stderr.exceeded {
-		return result, errors.New("Python frontend exceeded its output limit")
+	if stdout.exceeded {
+		return result, errFrontendOutputLimit
+	}
+	if stderr.exceeded {
+		return result, errors.New("Python frontend exceeded its diagnostic output limit")
 	}
 	if ctx.Err() != nil {
 		return result, ctx.Err()
@@ -135,6 +147,10 @@ func parse(ctx context.Context, interpreter string, source []byte) (parsedFile, 
 	}
 	if result.Calls == nil || result.Settings == nil || result.Mutations == nil || result.Issues == nil {
 		return parsedFile{}, errors.New("Python AST frontend returned an invalid response")
+	}
+	result.encodedBytes = stdout.buffer.Len()
+	if result.Truncated {
+		return result, errAnalysisTruncated
 	}
 	return result, nil
 }

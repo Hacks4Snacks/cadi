@@ -58,6 +58,18 @@ and `deduplicated`. A file analyzer requiring rendered inputs reports
 diagnostics do not imply exhaustive cryptographic coverage. Source build-context
 options require the `go` analyzer.
 
+Resource exhaustion is not completion. Python expression truncation or aggregate
+collection-budget exhaustion produces `failed` coverage and `incomplete`
+collection/report status while retaining valid partial evidence. Collection
+budget records include a reason and skipped-file counts; a file whose frontend
+response cannot fit can be both inspected and skipped. Ordinary unsupported
+expressions remain qualified limitations rather than operational failures.
+
+Automatic Kubernetes detection distinguishes recognized unrelated JSON from
+unclassified oversized candidates. The former is `not-applicable`; the latter
+has failed coverage and an explicit applicability error. A confirmed oversized
+resource remains a manifest-limit failure.
+
 Stderr contains one coverage summary per input. Identical diagnostic messages
 are grouped with an occurrence count; every original diagnostic location is
 available in the scan report. Exclusions and recognized report files are listed

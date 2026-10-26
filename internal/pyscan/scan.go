@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
@@ -23,6 +24,9 @@ type Source struct {
 	Selection   scope.Selection
 	interpreter string
 }
+
+const maxCollectedFactBytes = 128 << 20
+const collectionTimeout = 10 * time.Minute
 
 // Files selects Python modules, excluding conventional test names unless explicitly supplied.
 func Files(files []scope.File) []scope.File {
@@ -42,6 +46,10 @@ func Files(files []scope.File) []scope.File {
 
 // Collect returns configured findings and explicit parser/coverage failures.
 func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr error) {
+	return s.collect(ctx, maxCollectedFactBytes, collectionTimeout)
+}
+
+func (s Source) collect(ctx context.Context, factLimit int, timeout time.Duration) (result inventory.Result, returnErr error) {
 	files := Files(s.Selection.Files)
 	skipped := 0
 	for _, file := range s.Selection.Files {
@@ -51,12 +59,13 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	}
 	skipped -= len(files)
 	attempted := 0
+	limitReason := ""
 	defer func() {
 		status, reason := "completed", ""
 		if len(files) == 0 {
 			status, reason = "not-applicable", "no selected Python source files"
 		} else if returnErr != nil {
-			status = "failed"
+			status, reason = "failed", limitReason
 		}
 		refs := map[string]bool{}
 		for _, entry := range result.Entries {
@@ -94,27 +103,53 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	var documents []document
 	var failures error
 	var mutations []string
-	for _, file := range files {
-		if err := ctx.Err(); err != nil {
-			return result, errors.Join(failures, err)
+	retainedBytes := 0
+	deadline, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for index, file := range files {
+		if err := deadline.Err(); err != nil {
+			failures = errors.Join(failures, err)
+			skipped += len(files) - index
+			break
+		}
+		remaining := factLimit - retainedBytes
+		if remaining <= 0 {
+			limitReason = fmt.Sprintf("Python collection exceeded its %d-byte retained-fact budget", factLimit)
+			failures = errors.Join(failures, errors.New(limitReason))
+			skipped += len(files) - index
+			break
 		}
 		attempted++
-		data, err := readSource(ctx, file)
+		data, err := readSource(deadline, file)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("%s: %w", file.Location, err))
 			continue
 		}
-		parsed, err := parse(ctx, interpreter, data)
+		parsed, err := parseBounded(deadline, interpreter, data, min(remaining, maxFrontendBytes))
 		if parsed.Version != "" {
 			result.Metadata("python-parser-version", parsed.Version)
 		}
 		if err != nil {
+			if errors.Is(err, errFrontendOutputLimit) && remaining < maxFrontendBytes {
+				limitReason = fmt.Sprintf("Python collection exceeded its %d-byte retained-fact budget", factLimit)
+				failures = errors.Join(failures, fmt.Errorf("%s: %s", file.Location, limitReason))
+				skipped += len(files) - index
+				break
+			}
 			failures = errors.Join(failures, fmt.Errorf("%s: %w", file.Location, err))
-			continue
+			if !errors.Is(err, errAnalysisTruncated) {
+				continue
+			}
 		}
 		documents = append(documents, document{file: file, ast: parsed})
 		mutations = append(mutations, parsed.Mutations...)
+		retainedBytes += parsed.encodedBytes
 	}
+	if deadline.Err() != nil && ctx.Err() == nil {
+		limitReason = fmt.Sprintf("Python frontend collection exceeded its %s time limit", timeout)
+		failures = errors.Join(failures, fmt.Errorf("%s: %w", limitReason, deadline.Err()))
+	}
+	cancel()
 	slices.Sort(mutations)
 	mutations = slices.Compact(mutations)
 	parent := result.Add(cdx.Component{Type: cdx.ComponentTypeApplication,
@@ -123,6 +158,9 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	result.Subjects = append(result.Subjects, parent)
 	providers := map[string]string{}
 	for _, document := range documents {
+		if err := ctx.Err(); err != nil {
+			return result, errors.Join(failures, err)
+		}
 		shadowed, err := localProviders(s.Selection.Root, document.file.Path)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("%s: inspect local Python imports: %w", document.file.Location, err))
@@ -134,6 +172,9 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 			})
 		}
 		for _, call := range document.ast.Calls {
+			if err := ctx.Err(); err != nil {
+				return result, errors.Join(failures, err)
+			}
 			call.Value = invalidate(call.Value, shadowed, mutations)
 			name := symbol(call.Value.Base)
 			if name == "" {
@@ -191,6 +232,9 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 			result.DependOn(ref, provider(&result, providers, s.Selection.Root, name, evidence))
 		}
 		for _, assignment := range document.ast.Settings {
+			if err := ctx.Err(); err != nil {
+				return result, errors.Join(failures, err)
+			}
 			assignment.Receiver = invalidate(assignment.Receiver, shadowed, mutations)
 			assignment.Value = invalidate(assignment.Value, shadowed, mutations)
 			kind := instance(&assignment.Receiver)
@@ -221,7 +265,7 @@ func readSource(ctx context.Context, file scope.File) ([]byte, error) {
 
 func localProviders(root, filename string) (map[string]bool, error) {
 	blocked := map[string]bool{}
-	for _, name := range []string{"hashlib", "hmac", "ssl", "secrets", "os", "cryptography", "Crypto", "Cryptodome", "OpenSSL", "jwt", "paramiko", "requests", "httpx", "urllib3", "urllib", "http"} {
+	for _, name := range slices.Concat(cryptoNamespaces, []string{"os", "requests", "httpx", "urllib3", "urllib", "http"}) {
 		for _, directory := range []string{root, filepath.Join(root, "src"), filepath.Dir(filename)} {
 			for _, path := range []string{filepath.Join(directory, name+".py"), filepath.Join(directory, name)} {
 				_, err := os.Lstat(path)
@@ -237,9 +281,9 @@ func localProviders(root, filename string) (map[string]bool, error) {
 }
 
 func mutated(symbol string, mutations []string) bool {
-	symbol = canonicalHTTPName(symbol)
+	symbol = canonicalCryptoName(canonicalHTTPName(symbol))
 	for _, mutation := range mutations {
-		mutation = canonicalHTTPName(mutation)
+		mutation = canonicalCryptoName(canonicalHTTPName(mutation))
 		mutation = strings.TrimSuffix(strings.TrimSuffix(mutation, ".__new__"), ".__init__")
 		if symbol == mutation || strings.HasPrefix(symbol, mutation+".") {
 			return true

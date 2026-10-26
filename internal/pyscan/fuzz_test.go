@@ -13,6 +13,7 @@ func FuzzPythonFrontend(f *testing.F) {
 		"def f():\n global missing\n missing.operation()\n",
 		"from ssl import SSLContext as C\nc = C(unknown)\nc.minimum_version = version\n",
 		"import hashlib\nitems = [(hashlib := x) for x in values]\n",
+		"import hashlib\nhashlib.sha256(b'data')\nconsume(" + strings.Repeat("1,", 65) + ")\n",
 	} {
 		f.Add([]byte(source))
 	}

@@ -134,12 +134,7 @@ func (r resource) bootstrapTLS(node *yaml.Node, field, label string) error {
 			}
 			continue
 		case "encryption.config-file":
-			context := r.evidence.Context
-			identity := context.Resource
-			if len(context.Embedded) > 0 {
-				identity = context.Embedded[len(context.Embedded)-1].Resource
-			}
-			component := inventory.ConfigurationResource(*identity)
+			component := inventory.ConfigurationResource(*r.identity())
 			component.BOMRef = r.parent
 			inventory.Property(&component, parameter, value)
 			r.result.Add(component, r.at(nodes[0], field), "")

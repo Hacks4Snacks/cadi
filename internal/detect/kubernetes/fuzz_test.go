@@ -13,6 +13,8 @@ import (
 func FuzzManifestProducesValidPartialInventory(f *testing.F) {
 	for _, seed := range []string{
 		certificateManifest,
+		"--- {apiVersion: cert-manager.io/v1, kind: Certificate, metadata: {name: first}, spec: {}}\n--- {apiVersion: cert-manager.io/v1, kind: Certificate, metadata: {name: second}, spec: {}}\n",
+		"%YAML 1.1\n---\n" + certificateManifest + "...\n",
 		"apiVersion: v1\nkind: List\nitems: []\n",
 		"apiVersion: v1\nkind: Secret\nmetadata: {name: public}\ntype: kubernetes.io/tls\ndata: {tls.crt: invalid}\n",
 		"apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: public}\nspec: {privateKey: {algorithm: ECDSA, size: 256}}\n",

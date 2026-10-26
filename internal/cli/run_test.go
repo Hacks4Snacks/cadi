@@ -178,7 +178,7 @@ func TestGoScanRetainsActionableUnknownAPINotes(t *testing.T) {
 	directory := t.TempDir()
 	for name, content := range map[string]string{
 		"go.mod":  "module example.test/unknown\n\ngo 1.27.0\n",
-		"main.go": "package unknown\nimport \"crypto\"\nfunc Run(s crypto.Signer) { _, _ = s.Sign(nil, nil, crypto.SHA256) }\n",
+		"main.go": "package unknown\nimport \"crypto/subtle\"\nfunc Run() { subtle.WithDataIndependentTiming(func() {}) }\n",
 	} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0600); err != nil {
 			t.Fatal(err)
@@ -187,7 +187,7 @@ func TestGoScanRetainsActionableUnknownAPINotes(t *testing.T) {
 	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"scan", directory, "--scan-report", reportPath}, &stdout, &stderr)
-	if code != 0 || !strings.Contains(stderr.String(), "NOTE: main.go:3: cryptographic API not modeled: (crypto.Signer).Sign") {
+	if code != 0 || !strings.Contains(stderr.String(), "NOTE: main.go:3: cryptographic API not modeled: func crypto/subtle.WithDataIndependentTiming(") {
 		t.Fatalf("unknown API was hidden: exit=%d stderr=%s", code, stderr.String())
 	}
 	report := readScanReport(t, reportPath)

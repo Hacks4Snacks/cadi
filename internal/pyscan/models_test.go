@@ -227,6 +227,120 @@ SHA256.new(b"PRIVATE_PAYLOAD")
 	}
 }
 
+func TestPythonExistingLibraryOperations(t *testing.T) {
+	source := `import bcrypt
+from argon2 import PasswordHasher
+from argon2.low_level import Type
+from cryptography.hazmat.primitives import cmac, keywrap
+from cryptography.hazmat.primitives.asymmetric import ec, x25519, x448
+from cryptography.hazmat.primitives.ciphers import algorithms
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.argon2 import Argon2id, Argon2i, Argon2d
+x = x25519.X25519PrivateKey.generate()
+y = x448.X448PrivateKey.generate()
+e = ec.generate_private_key(ec.SECP256R1())
+mac = cmac.CMAC(algorithms.AES(b"x" * 32))
+kdf = Argon2id(salt=b"PRIVATE_SALT", length=32, iterations=4, lanes=2, memory_cost=32768)
+hasher = PasswordHasher(time_cost=4, memory_cost=32768, parallelism=2, hash_len=32, salt_len=8, type=Type.ID)
+`
+	tests := []struct {
+		code, symbol, name, family, bits, curve, oid string
+		primitive                                    cdx.CryptoPrimitive
+		function                                     cdx.CryptoFunction
+		properties                                   map[string]string
+	}{
+		{`x.exchange(peer)`, primitives + "asymmetric.x25519.X25519PrivateKey.exchange", "X25519", "ECDH", "", "other/Curve25519", inventory.OIDX25519, cdx.CryptoPrimitiveKeyAgree, cdx.CryptoFunctionKeyderive, nil},
+		{`y.exchange(peer)`, primitives + "asymmetric.x448.X448PrivateKey.exchange", "X448", "ECDH", "", "other/Curve448", inventory.OIDX448, cdx.CryptoPrimitiveKeyAgree, cdx.CryptoFunctionKeyderive, nil},
+		{`e.exchange(ec.ECDH(), peer)`, primitives + "asymmetric.ec.EllipticCurvePrivateKey.exchange", "ECDH", "ECDH", "", "nist/P-256", "", cdx.CryptoPrimitiveKeyAgree, cdx.CryptoFunctionKeyderive, nil},
+		{`e.exchange(unknown_algorithm, peer)`, primitives + "asymmetric.ec.EllipticCurvePrivateKey.exchange", "Elliptic-curve key agreement", "", "", "nist/P-256", "", cdx.CryptoPrimitiveKeyAgree, cdx.CryptoFunctionKeyderive, nil},
+		{`keywrap.aes_key_wrap(b"x" * 16, b"PRIVATE_WRAPPED_KEY")`, primitives + "keywrap.aes_key_wrap", "AES-KW", "AES", "128", "", "2.16.840.1.101.3.4.1.5", cdx.CryptoPrimitiveKeyWrap, cdx.CryptoFunctionEncrypt, nil},
+		{`keywrap.aes_key_unwrap(b"x" * 24, wrapped)`, primitives + "keywrap.aes_key_unwrap", "AES-KW", "AES", "192", "", "2.16.840.1.101.3.4.1.25", cdx.CryptoPrimitiveKeyWrap, cdx.CryptoFunctionDecrypt, nil},
+		{`keywrap.aes_key_wrap_with_padding(b"x" * 32, data)`, primitives + "keywrap.aes_key_wrap_with_padding", "AES-KWP", "AES", "256", "", "2.16.840.1.101.3.4.1.48", cdx.CryptoPrimitiveKeyWrap, cdx.CryptoFunctionEncrypt, nil},
+		{`keywrap.aes_key_unwrap_with_padding(b"x" * 16, data)`, primitives + "keywrap.aes_key_unwrap_with_padding", "AES-KWP", "AES", "128", "", "2.16.840.1.101.3.4.1.8", cdx.CryptoPrimitiveKeyWrap, cdx.CryptoFunctionDecrypt, nil},
+		{`keywrap.aes_key_wrap(unknown_key, b"x" * 32)`, primitives + "keywrap.aes_key_wrap", "AES-KW", "AES", "", "", "", cdx.CryptoPrimitiveKeyWrap, cdx.CryptoFunctionEncrypt, nil},
+		{`keywrap.aes_key_wrap(bytearray(b"x" * 32), data)`, primitives + "keywrap.aes_key_wrap", "AES-KW", "AES", "", "", "", cdx.CryptoPrimitiveKeyWrap, cdx.CryptoFunctionEncrypt, nil},
+		{`cmac.CMAC(algorithms.AES(b"x" * 16))`, primitives + "cmac.CMAC", "AES-CMAC", "CMAC", "128", "", "", cdx.CryptoPrimitiveMAC, cdx.CryptoFunctionTag, nil},
+		{`mac.finalize()`, primitives + "cmac.CMAC.finalize", "AES-CMAC", "CMAC", "256", "", "", cdx.CryptoPrimitiveMAC, cdx.CryptoFunctionTag, nil},
+		{`mac.verify(b"PRIVATE_TAG")`, primitives + "cmac.CMAC.verify", "AES-CMAC", "CMAC", "256", "", "", cdx.CryptoPrimitiveMAC, cdx.CryptoFunctionVerify, nil},
+		{`mac.copy().verify(tag)`, primitives + "cmac.CMAC.verify", "AES-CMAC", "CMAC", "256", "", "", cdx.CryptoPrimitiveMAC, cdx.CryptoFunctionVerify, nil},
+		{`cmac.CMAC(unknown_cipher)`, primitives + "cmac.CMAC", "CMAC", "CMAC", "", "", "", cdx.CryptoPrimitiveMAC, cdx.CryptoFunctionTag, nil},
+		{`cmac.CMAC(algorithms.ChaCha20(b"x" * 32, b"n" * 16))`, primitives + "cmac.CMAC", "CMAC", "CMAC", "", "", "", cdx.CryptoPrimitiveMAC, cdx.CryptoFunctionTag, nil},
+		{`kdf.derive(b"PRIVATE_PASSWORD")`, primitives + "kdf.argon2.Argon2id.derive", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"iterations": "4", "memory-kib": "32768", "parallelism": "2", "derived-key-size-bits": "256"}},
+		{`kdf.verify(b"PRIVATE_PASSWORD", b"PRIVATE_EXPECTED_KEY")`, primitives + "kdf.argon2.Argon2id.verify", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionVerify, map[string]string{"derived-key-size-bits": "256"}},
+		{`Argon2i(salt=salt, length=16, iterations=2, lanes=1, memory_cost=8192)`, primitives + "kdf.argon2.Argon2i", "Argon2i", "", "", "", "", cdx.CryptoPrimitiveKDF, "", map[string]string{"iterations": "2", "derived-key-size-bits": "128"}},
+		{`Argon2d(salt=salt, length=16, iterations=2, lanes=1, memory_cost=8192)`, primitives + "kdf.argon2.Argon2d", "Argon2d", "", "", "", "", cdx.CryptoPrimitiveKDF, "", nil},
+		{`Argon2id(salt, 32, 4, 2, 32768)`, primitives + "kdf.argon2.Argon2id", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, "", map[string]string{"derived-key-size-bits": "", "iterations": "", "memory-kib": ""}},
+		{`AESGCM(kdf.derive(password))`, primitives + "ciphers.aead.AESGCM", "AES-GCM", "AES", "256", "", "2.16.840.1.101.3.4.1.46", cdx.CryptoPrimitiveAE, "", nil},
+		{`bcrypt.hashpw(b"PRIVATE_PASSWORD", bcrypt.gensalt(rounds=13))`, "bcrypt.hashpw", "bcrypt", "bcrypt", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"cost": "13"}},
+		{`bcrypt.hashpw(password, bcrypt.gensalt())`, "bcrypt.hashpw", "bcrypt", "bcrypt", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"cost": ""}},
+		{`bcrypt.checkpw(b"PRIVATE_PASSWORD", b"PRIVATE_HASH")`, "bcrypt.checkpw", "bcrypt", "bcrypt", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionVerify, map[string]string{"cost": ""}},
+		{`bcrypt.kdf(password=password, salt=salt, desired_key_bytes=32, rounds=50)`, "bcrypt.kdf", "bcrypt-PBKDF", "bcrypt", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"rounds": "50", "cost": "", "derived-key-size-bits": "256"}},
+		{`hasher.hash("PRIVATE_PASSWORD")`, "argon2.PasswordHasher.hash", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"iterations": "4", "memory-kib": "32768", "parallelism": "2", "derived-key-size-bits": "256"}},
+		{`hasher.hash(password, salt=b"s" * 16)`, "argon2.PasswordHasher.hash", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"salt-size-bits": "128"}},
+		{`hasher.hash(password, salt=None)`, "argon2.PasswordHasher.hash", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"salt-size-bits": "64"}},
+		{`hasher.hash(password, salt=unknown)`, "argon2.PasswordHasher.hash", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"salt-size-bits": ""}},
+		{`hasher.hash(password, **options)`, "argon2.PasswordHasher.hash", "Argon2id", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"salt-size-bits": ""}},
+		{`hasher.verify("PRIVATE_HASH", "PRIVATE_PASSWORD")`, "argon2.PasswordHasher.verify", "Argon2", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionVerify, map[string]string{"iterations": "", "memory-kib": "", "parallelism": "", "derived-key-size-bits": ""}},
+		{`PasswordHasher().hash(password)`, "argon2.PasswordHasher.hash", "Argon2", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"iterations": ""}},
+		{`PasswordHasher(type=Type.I, time_cost=2).hash(password)`, "argon2.PasswordHasher.hash", "Argon2i", "", "", "", "", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive, map[string]string{"iterations": "2"}},
+		{`AESGCM(bcrypt.kdf(password=password, salt=salt, desired_key_bytes=16, rounds=50))`, primitives + "ciphers.aead.AESGCM", "AES-GCM", "AES", "128", "", "2.16.840.1.101.3.4.1.6", cdx.CryptoPrimitiveAE, "", nil},
+	}
+	firstLine := strings.Count(source, "\n") + 1
+	for _, test := range tests {
+		source += test.code + "\n"
+	}
+	source += "mac.update(b'PRIVATE_MESSAGE')\nhasher.check_needs_rehash('PRIVATE_HASH')\n"
+	result, err := (Source{Selection: fixture(t, map[string]string{"app.py": source})}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Errorf("supported operations remain gaps: %+v", result.Diagnostics)
+	}
+	seen := map[int]bool{}
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties == nil {
+			continue
+		}
+		index := entry.Evidence.Line - firstLine
+		if index < 0 || index >= len(tests) || entry.Evidence.Symbol != tests[index].symbol {
+			continue
+		}
+		seen[index] = true
+		want := tests[index]
+		p := entry.Component.CryptoProperties
+		a := p.AlgorithmProperties
+		if entry.Component.Name != want.name || a.Primitive != want.primitive || a.AlgorithmFamily != want.family ||
+			a.ParameterSetIdentifier != want.bits || a.EllipticCurve != want.curve || p.OID != want.oid {
+			t.Errorf("%s: got %s %+v OID=%q; want %+v", want.code, entry.Component.Name, a, p.OID, want)
+		}
+		if want.function == "" {
+			if a.CryptoFunctions != nil {
+				t.Errorf("%s invented a cryptographic operation", want.code)
+			}
+		} else if a.CryptoFunctions == nil || !slices.Equal(*a.CryptoFunctions, []cdx.CryptoFunction{want.function}) {
+			t.Errorf("%s lost its cryptographic operation", want.code)
+		}
+		for name, value := range want.properties {
+			if got := property(entry, name); got != value {
+				t.Errorf("%s: %s=%q; want %q", want.code, name, got, value)
+			}
+		}
+		if a.ClassicalSecurityLevel != nil || a.NistQuantumSecurityLevel != nil || entry.Evidence.Kind != "configured" {
+			t.Error("source intent became a security or execution claim")
+		}
+	}
+	if len(seen) != len(tests) {
+		t.Errorf("found %d of %d modeled operation sites", len(seen), len(tests))
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_") {
+			t.Fatalf("invalid or unsafe library output: %v", err)
+		}
+	}
+}
+
 func TestPythonTLSIsConfigurationNotNegotiation(t *testing.T) {
 	selection := fixture(t, map[string]string{"tls_config.py": `
 import ssl

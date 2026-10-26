@@ -1533,7 +1533,7 @@ func Run(signer crypto.Signer, certificate *x509.Certificate, sshSigner ssh.Sign
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, symbol := range []string{"crypto.Signer).Sign", "x509.Certificate).CheckSignature", "ssh.Signer).Sign", "tls.SignatureScheme).String"} {
+	for _, symbol := range []string{"x509.Certificate).CheckSignature", "ssh.Signer).Sign", "tls.SignatureScheme).String"} {
 		found := false
 		for _, diagnostic := range result.Diagnostics {
 			if strings.Contains(diagnostic.Message, symbol) {
@@ -1680,6 +1680,97 @@ func Run(private *rsa.PrivateKey, public ssh.PublicKey, a,b *x509.Certificate) {
 	}
 	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGoInterfaceCryptoOperations(t *testing.T) {
+	source := `package example
+import ("crypto"; "crypto/aes"; "crypto/cipher"; "crypto/des")
+type other struct{}
+func (other) Sign() {}
+func (other) Encrypt() {}
+func (other) XORKeyStream() {}
+func opaque() cipher.Block { b, _ := aes.NewCipher(make([]byte, 32)); return b }
+func Run(s crypto.Signer, d crypto.Decrypter, block cipher.Block, stream cipher.Stream, choose bool) {
+data := []byte("PRIVATE_MESSAGE")
+a128, _ := aes.NewCipher(make([]byte, 16))
+a256, _ := aes.NewCipher(make([]byte, 32))
+desKey, _ := des.NewCipher(make([]byte, 8))
+same := a128; if choose { same = a256 }
+mixed := a128; if choose { mixed = desKey }
+`
+	tests := []struct {
+		code, symbol, name, family, bits string
+		primitive                        cdx.CryptoPrimitive
+		mode                             cdx.CryptoAlgorithmMode
+		function                         cdx.CryptoFunction
+	}{
+		{`_, _ = s.Sign(nil, data, crypto.SHA256)`, "(crypto.Signer).Sign", "Signature operation", "", "", cdx.CryptoPrimitiveSignature, "", cdx.CryptoFunctionSign},
+		{`_, _ = d.Decrypt(nil, data, nil)`, "(crypto.Decrypter).Decrypt", "Public-key decryption", "", "", cdx.CryptoPrimitivePKE, "", cdx.CryptoFunctionDecrypt},
+		{`block.Encrypt(data, data)`, "(crypto/cipher.Block).Encrypt", "Block cipher operation", "", "", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionEncrypt},
+		{`block.Decrypt(data, data)`, "(crypto/cipher.Block).Decrypt", "Block cipher operation", "", "", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionDecrypt},
+		{`stream.XORKeyStream(data, data)`, "(crypto/cipher.Stream).XORKeyStream", "Stream cipher operation", "", "", cdx.CryptoPrimitiveStreamCipher, "", ""},
+		{`a256.Encrypt(data, data)`, "(crypto/cipher.Block).Encrypt", "AES", "AES", "256", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionEncrypt},
+		{`desKey.Decrypt(data, data)`, "(crypto/cipher.Block).Decrypt", "DES", "DES", "64", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionDecrypt},
+		{`same.Encrypt(data, data)`, "(crypto/cipher.Block).Encrypt", "AES", "AES", "", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionEncrypt},
+		{`mixed.Encrypt(data, data)`, "(crypto/cipher.Block).Encrypt", "Block cipher operation", "", "", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionEncrypt},
+		{`opaque().Encrypt(data, data)`, "(crypto/cipher.Block).Encrypt", "Block cipher operation", "", "", cdx.CryptoPrimitiveBlockCipher, "", cdx.CryptoFunctionEncrypt},
+		{`cipher.NewCTR(a256, make([]byte,16)).XORKeyStream(data, data)`, "(crypto/cipher.Stream).XORKeyStream", "AES-CTR", "AES", "256", cdx.CryptoPrimitiveBlockCipher, cdx.CryptoAlgorithmModeCTR, ""},
+		{`cipher.NewOFB(a256, make([]byte,16)).XORKeyStream(data, data)`, "(crypto/cipher.Stream).XORKeyStream", "AES-OFB", "AES", "256", cdx.CryptoPrimitiveBlockCipher, cdx.CryptoAlgorithmModeOFB, ""},
+		{`cipher.NewCFBEncrypter(a256, make([]byte,16)).XORKeyStream(data, data)`, "(crypto/cipher.Stream).XORKeyStream", "AES-CFB", "AES", "256", cdx.CryptoPrimitiveBlockCipher, cdx.CryptoAlgorithmModeCFB, cdx.CryptoFunctionEncrypt},
+		{`cipher.NewCFBDecrypter(a256, make([]byte,16)).XORKeyStream(data, data)`, "(crypto/cipher.Stream).XORKeyStream", "AES-CFB", "AES", "256", cdx.CryptoPrimitiveBlockCipher, cdx.CryptoAlgorithmModeCFB, cdx.CryptoFunctionDecrypt},
+		{`cipher.NewCFBEncrypter(block, make([]byte,16)).XORKeyStream(data, data)`, "(crypto/cipher.Stream).XORKeyStream", "Block cipher (CFB)", "", "", cdx.CryptoPrimitiveBlockCipher, cdx.CryptoAlgorithmModeCFB, cdx.CryptoFunctionEncrypt},
+	}
+	firstLine := strings.Count(source, "\n") + 1
+	for _, test := range tests {
+		source += test.code + "\n"
+	}
+	source += "other{}.Sign(); other{}.Encrypt(); other{}.XORKeyStream()\n}\n"
+	result, err := (Source{Path: fixture(t, source), Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Errorf("modeled operations remain gaps: %+v", result.Diagnostics)
+	}
+	seen := map[int]bool{}
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties == nil {
+			continue
+		}
+		index := entry.Evidence.Line - firstLine
+		if index < 0 || index >= len(tests) || entry.Evidence.Symbol != tests[index].symbol {
+			if index == len(tests) {
+				t.Error("unrelated methods were attributed to cryptographic APIs")
+			}
+			continue
+		}
+		seen[index] = true
+		want := tests[index]
+		a := entry.Component.CryptoProperties.AlgorithmProperties
+		if entry.Component.Name != want.name || a.Primitive != want.primitive || a.AlgorithmFamily != want.family ||
+			a.ParameterSetIdentifier != want.bits || a.Mode != want.mode {
+			t.Errorf("%s: got %s %+v; want %+v", want.code, entry.Component.Name, a, want)
+		}
+		if want.function == "" {
+			if a.CryptoFunctions != nil {
+				t.Errorf("%s invented stream direction", want.code)
+			}
+		} else if a.CryptoFunctions == nil || !slices.Equal(*a.CryptoFunctions, []cdx.CryptoFunction{want.function}) {
+			t.Errorf("%s lost its explicit operation", want.code)
+		}
+		if entry.Evidence.Kind != "configured" || a.ClassicalSecurityLevel != nil || a.NistQuantumSecurityLevel != nil {
+			t.Error("source intent became a runtime or security claim")
+		}
+	}
+	if len(seen) != len(tests) {
+		t.Errorf("found %d of %d interface operation sites", len(seen), len(tests))
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_MESSAGE") {
+			t.Fatalf("invalid or unsafe interface output: %v", err)
+		}
 	}
 }
 

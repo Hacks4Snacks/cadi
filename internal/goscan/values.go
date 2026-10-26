@@ -344,17 +344,32 @@ func (v *values) integer(value ssa.Value) (int64, bool) {
 // constructorAPI identifies a visible factory, without executing it or assuming
 // its argument values. Conflicting branches, fields, and opaque wrappers stay unknown.
 func constructorAPI(value ssa.Value) apiIdentity {
-	seen := map[ssa.Value]bool{}
-	var resolve func(ssa.Value, int) apiIdentity
-	resolve = func(value ssa.Value, depth int) apiIdentity {
-		if value == nil || depth > 16 || seen[value] {
+	calls := constructorCalls(value)
+	var common apiIdentity
+	for index, call := range calls {
+		next := calledAPI(call)
+		if next == (apiIdentity{}) || index > 0 && next != common {
 			return apiIdentity{}
+		}
+		common = next
+	}
+	return common
+}
+
+func constructorCalls(value ssa.Value) []*ssa.CallCommon {
+	seen := map[ssa.Value]bool{}
+	visits := 0
+	var resolve func(ssa.Value, int) []*ssa.CallCommon
+	resolve = func(value ssa.Value, depth int) []*ssa.CallCommon {
+		visits++
+		if value == nil || depth > 16 || visits > 128 || seen[value] {
+			return nil
 		}
 		seen[value] = true
 		defer delete(seen, value)
 		switch value := value.(type) {
 		case *ssa.Call:
-			return calledAPI(&value.Call)
+			return []*ssa.CallCommon{&value.Call}
 		case *ssa.Extract:
 			if value.Index == 0 {
 				return resolve(value.Tuple, depth+1)
@@ -366,17 +381,17 @@ func constructorAPI(value ssa.Value) apiIdentity {
 		case *ssa.ChangeType:
 			return resolve(value.X, depth+1)
 		case *ssa.Phi:
-			var common apiIdentity
-			for index, edge := range value.Edges {
+			var calls []*ssa.CallCommon
+			for _, edge := range value.Edges {
 				next := resolve(edge, depth+1)
-				if next == (apiIdentity{}) || index > 0 && next != common {
-					return apiIdentity{}
+				if len(next) == 0 {
+					return nil
 				}
-				common = next
+				calls = append(calls, next...)
 			}
-			return common
+			return calls
 		}
-		return apiIdentity{}
+		return nil
 	}
 	return resolve(value, 0)
 }

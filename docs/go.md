@@ -27,6 +27,8 @@ Recognizers cover common constructors and operations in these API families:
 - Block-cipher mode constructors, including CBC, CTR, and GCM.
 - AEAD encryption/authentication and decryption/verification, block-mode
   operations, and NaCl XSalsa20-Poly1305 secretbox operations.
+- Generic signer/decrypter interfaces, block encryption/decryption, and stream
+  operations.
 - X.509 certificate/key operations, certificate requests, TLS entry points,
   TLS configuration initializers, and SSH key/connection APIs.
 - Elliptic-curve selection, public-key access, X.509 certificate-pool imports,
@@ -90,6 +92,23 @@ The exact `cryptobyte.NewBuilder`, `Builder.AddUint16LengthPrefixed`,
 cryptographic operations. This is not blanket suppression of the package or
 of similarly named methods on other types.
 
+## Interface operations
+
+`crypto.Signer.Sign` and `crypto.Decrypter.Decrypt` record configured signing and
+public-key decryption intent. An opaque interface does not establish an algorithm,
+key size, signature scheme, implementation backend, or successful operation.
+
+`cipher.Block.Encrypt/Decrypt` can recover AES, DES, or 3DES and input key length
+from visible constructors. Aliases, interface wrapping, and agreeing branches are
+supported. Different key lengths remain unresolved; conflicting algorithms and
+opaque factories remain generic block-cipher operations.
+
+`cipher.Stream.XORKeyStream` follows visible CTR, OFB, and CFB constructors and
+their block-cipher inputs. CTR/OFB do not establish an encryption versus
+decryption direction. Explicit CFB encrypter/decrypter constructors do. Arbitrary
+streams retain operation evidence without a guessed algorithm or direction.
+Input key lengths are not security-strength claims.
+
 ## Resolution and source scope
 
 Constructor tracking is bounded to visible calls, aliases/interface wrapping,
@@ -124,7 +143,9 @@ For example, a factory assigning 4096 bits adds
 fact, without setting an unconditional native parameter set on an unconstrained
 method. Zero-value receivers, later mutation, other constructions, and whether
 the factory is ever called are not proven away.
-Cipher-mode findings do not currently resolve their underlying block cipher.
+Mode constructors, AEAD calls, and `BlockMode` operations do not currently resolve
+their underlying block cipher. The `Block` and `Stream` models described above
+only resolve bounded visible constructors.
 TLS struct initializers record explicit minimum/maximum versions, client-auth
 mode, and peer-verification configuration; subsequent mutations and implicit
 runtime defaults are not evaluated.

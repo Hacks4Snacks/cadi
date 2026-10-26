@@ -30,7 +30,11 @@ unresolved Helm expressions remain coverage limitations.
 | kubeadm configuration, v1beta3/v1beta4               | Explicit cluster/init/join TLS and certificate configuration                         |
 | `apiserver.config.k8s.io/v1 EncryptionConfiguration` | Ordered encryption providers and declared key references                             |
 
-Multi-document YAML and JSON resources are supported. Kubernetes objects require
+Multi-document YAML and JSON resources are supported, including inline document
+starts, directives, explicit end markers, and UTF-16 streams supported by the
+YAML decoder. UTF-8 document framing preserves line numbers and source comments,
+and allows later documents to survive a malformed preceding document.
+Kubernetes objects require
 `metadata.name`; configuration documents such as EncryptionConfiguration do not.
 Runtime-substituted identities in embedded profiles and CAPI bootstrap resources
 stay unresolved without suppressing known settings. An omitted namespace stays
@@ -40,6 +44,9 @@ the detector does not look up their targets or prove they exist. Cert-manager
 deployment/spec details are omitted as described in
 [declarative certificate configuration](go.md#declarative-certificate-configuration);
 issuer chains are not validated from declarations.
+An embedded Ingress uses its own declared namespace for Secret references, not
+the namespace of its containing ConfigMap or bootstrap resource. If the inner
+namespace is omitted, the reference also leaves it unspecified.
 
 For TLS Secrets, `stringData` overrides the corresponding `data` field, matching
 Kubernetes merge semantics. Base64 decoding and material parsing happen locally;
@@ -142,3 +149,17 @@ include raw input snippets. Top-level unsupported Kubernetes kinds produce
 coverage notes; unrelated embedded kinds are retained in scan-report details.
 Neither is treated as discovered cryptography. This is configuration inventory,
 not a Kubernetes validator, policy engine, or live-cluster scanner.
+
+Automatic file discovery has a separate 32 MiB candidate-recognition allowance.
+For a candidate exceeding the 16 MiB manifest limit, bounded JSON recognition
+checks exact root `apiVersion` and `kind` keys. Valid unrelated JSON is
+`not-applicable`, including nested lookalike headers; it does not fail the
+repository scan. An oversized JSON resource still fails the unchanged manifest
+limit. Explicitly selected files and strict manifest inputs retain that limit
+without the larger recognition allowance.
+
+Oversized content that is not valid JSON, or cannot be read within the recognition
+allowance, produces an explicit `applicability undetermined` error and failed
+coverage. It is neither silently ignored nor claimed to be a confirmed manifest.
+Other valid findings remain in the partial CBOM; the CLI exits 1. The recognition
+allowance does not increase the YAML parser or embedded-document limits.

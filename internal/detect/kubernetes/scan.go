@@ -4,6 +4,7 @@ package kubernetes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"ciphertrail/internal/detect"
 	"ciphertrail/internal/input"
@@ -22,6 +24,8 @@ import (
 
 // MaxManifestBytes bounds YAML/JSON parsing independently of binary/material limits.
 const MaxManifestBytes int64 = 16 << 20
+
+const maxRecognitionBytes int64 = 32 << 20
 
 // Detector reads supported Kubernetes resources; Strict selects explicitly requested manifests.
 type Detector struct{ Strict bool }
@@ -47,13 +51,67 @@ func (d Detector) Match(file *input.File, _ []byte) detect.Match {
 // Detect inventories declarations and embedded TLS material without executing input.
 func (d Detector) Detect(ctx context.Context, file *input.File) (inventory.Result, bool, error) {
 	var result inventory.Result
-	data, err := file.ReadAll(ctx, MaxManifestBytes)
+	limit := MaxManifestBytes
+	if !d.Strict && !file.Explicit {
+		limit = maxRecognitionBytes
+	}
+	data, err := file.ReadAll(ctx, limit)
 	if err != nil {
+		if limit > MaxManifestBytes {
+			return result, false, fmt.Errorf("Kubernetes applicability undetermined (recognition limit %d bytes): %w", limit, err)
+		}
 		return result, false, err
+	}
+	if int64(len(data)) > MaxManifestBytes {
+		found, err := oversizedJSONResource(ctx, data)
+		if err != nil || !found {
+			return result, false, err
+		}
+		return result, true, fmt.Errorf("Kubernetes resource exceeds the %d-byte manifest parsing limit", MaxManifestBytes)
 	}
 	scanner := resource{result: &result, evidence: file.Evidence, parent: file.Parent, budget: &decodeBudget{}}
 	found, err := scanner.documents(ctx, data, d.Strict)
 	return result, found, err
+}
+
+func oversizedJSONResource(ctx context.Context, data []byte) (bool, error) {
+	if !json.Valid(data) {
+		return false, fmt.Errorf("Kubernetes applicability undetermined: oversized input is not valid JSON; manifest parsing limit remains %d bytes", MaxManifestBytes)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if bytes.TrimSpace(data)[0] != '{' {
+		return false, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return false, errors.New("Kubernetes JSON resource recognition failed")
+	}
+	if token != json.Delim('{') {
+		return false, nil
+	}
+	apiVersion, kind := false, false
+	var value json.RawMessage
+	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		key, err := decoder.Token()
+		if err != nil {
+			return false, errors.New("Kubernetes JSON resource recognition failed")
+		}
+		apiVersion = apiVersion || key == "apiVersion"
+		kind = kind || key == "kind"
+		if apiVersion && kind {
+			return true, nil
+		}
+		if err := decoder.Decode(&value); err != nil {
+			return false, errors.New("Kubernetes JSON resource recognition failed")
+		}
+	}
+	return false, nil
 }
 
 type resource struct {
@@ -63,6 +121,14 @@ type resource struct {
 	prefix   string
 	offset   int
 	budget   *decodeBudget
+}
+
+func (r resource) identity() *inventory.ResourceIdentity {
+	context := r.evidence.Context
+	if len(context.Embedded) > 0 {
+		return context.Embedded[len(context.Embedded)-1].Resource
+	}
+	return context.Resource
 }
 
 var resourceToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
@@ -235,26 +301,54 @@ type documentChunk struct {
 }
 
 func splitDocuments(data []byte) []documentChunk {
+	if bytes.HasPrefix(data, []byte{0xff, 0xfe}) || bytes.HasPrefix(data, []byte{0xfe, 0xff}) {
+		// UTF-8 byte boundaries cannot frame UTF-16; use the decoder's stream support.
+		return []documentChunk{{data, 1}}
+	}
 	var documents []documentChunk
 	start, offset, line, firstLine := 0, 0, 1, 1
-	for _, row := range bytes.SplitAfter(data, []byte{'\n'}) {
-		text := strings.TrimRight(string(row), "\r\n")
-		if strings.HasPrefix(text, "---") {
-			tail := strings.TrimSpace(text[3:])
-			if tail == "" || strings.HasPrefix(tail, "#") {
-				if offset > start {
-					documents = append(documents, documentChunk{data[start:offset], firstLine})
-				}
-				start, firstLine = offset, line
+	body := false
+	for offset < len(data) {
+		end, next := len(data), len(data)
+		if index := bytes.IndexAny(data[offset:], "\r\n\u0085\u2028\u2029"); index >= 0 {
+			end = offset + index
+			_, size := utf8.DecodeRune(data[end:])
+			next = end + size
+			if data[end] == '\r' && next < len(data) && data[next] == '\n' {
+				next++
 			}
 		}
-		offset += len(row)
+		row := data[offset:end]
+		if offset == 0 {
+			row = bytes.TrimPrefix(row, []byte("\xef\xbb\xbf"))
+		}
+		switch {
+		case documentIndicator(row, "---"):
+			if body && offset > start {
+				documents = append(documents, documentChunk{data[start:offset], firstLine})
+				start, firstLine = offset, line
+			}
+			body = true
+		case documentIndicator(row, "..."):
+			documents = append(documents, documentChunk{data[start:next], firstLine})
+			start, firstLine, body = next, line+1, false
+		default:
+			text := bytes.TrimSpace(row)
+			if len(text) > 0 && text[0] != '#' && row[0] != '%' {
+				body = true
+			}
+		}
+		offset = next
 		line++
 	}
 	if start < len(data) {
 		documents = append(documents, documentChunk{data[start:], firstLine})
 	}
 	return documents
+}
+
+func documentIndicator(row []byte, marker string) bool {
+	return bytes.HasPrefix(row, []byte(marker)) && (len(row) == 3 || row[3] == ' ' || row[3] == '\t')
 }
 
 // malformedResourceHint is used only after decoding fails, never to exclude a valid document.

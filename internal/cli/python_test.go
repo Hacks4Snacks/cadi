@@ -282,6 +282,26 @@ func TestPythonSharedAnalysisPreservesPartialFailures(t *testing.T) {
 	}
 }
 
+func TestPythonTruncationProducesIncompleteReportAndSummary(t *testing.T) {
+	root := t.TempDir()
+	source := "import hashlib\nhashlib.sha256(b'PRIVATE_SENTINEL')\nconsume(" + strings.Repeat("1,", 65) + ")\n"
+	writeRepositoryFile(t, root, "app.py", source)
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"scan", root, "--analyzers", "python", "--offline", "--summary", "--scan-report", reportPath}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "Cryptographic findings: 1 (INCOMPLETE)") ||
+		!strings.Contains(stdout.String(), `"value": "incomplete"`) || strings.Contains(stdout.String(), "PRIVATE_SENTINEL") {
+		t.Fatalf("truncation had success-shaped output: exit=%d %s", code, stderr.String())
+	}
+	report := readScanReport(t, reportPath)
+	if report.Status != "incomplete" || report.Collections[0].Coverage[0].Status != "failed" {
+		t.Fatalf("scan report hid truncation: %+v", report)
+	}
+	if err := cyclonedx.Validate(stdout.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExplicitPythonFilesDoNotRequireArtifactFindings(t *testing.T) {
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "app.py", "x = 1\n")

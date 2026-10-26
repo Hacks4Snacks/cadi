@@ -321,6 +321,31 @@ func TestIndependentProjectsKeepSharedMaterialConsolidation(t *testing.T) {
 	}
 }
 
+func TestLargeJSONDoesNotFailMixedRepositoryAnalysis(t *testing.T) {
+	root := t.TempDir()
+	writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'PRIVATE_SENTINEL')\n")
+	writeRepositoryFile(t, root, "data.json", `{"data":"`+strings.Repeat("x", 17<<20)+`"}`)
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"scan", root, "--offline"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("unrelated JSON failed the default scan: %d %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "SHA-256") || strings.Contains(stdout.String(), "PRIVATE_SENTINEL") ||
+		!strings.Contains(stderr.String(), "kubernetes=not-applicable") {
+		t.Fatalf("mixed scan lost findings or mislabeled applicability: %s", stderr.String())
+	}
+	writeRepositoryFile(t, root, "data.json", `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"large"},"data":"`+strings.Repeat("x", 17<<20)+`"}`)
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"scan", root, "--offline"}, &stdout, &stderr); code != 1 ||
+		!strings.Contains(stderr.String(), "kubernetes=failed") || !strings.Contains(stderr.String(), "manifest parsing limit") {
+		t.Fatalf("oversized manifest did not fail explicitly: %d %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "SHA-256") || !strings.Contains(stdout.String(), `"value": "incomplete"`) ||
+		strings.Contains(stdout.String(), "PRIVATE_SENTINEL") {
+		t.Fatal("oversized manifest lost valid partial evidence or produced success-shaped output")
+	}
+}
+
 func TestRepositoryWithoutGoHasExplicitCoverage(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "certificate.yaml"), []byte("apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: example}\nspec: {}\n"), 0600); err != nil {

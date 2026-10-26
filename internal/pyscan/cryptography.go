@@ -48,6 +48,12 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 	if strings.HasPrefix(short, "kdf.") {
 		return kdfCall(short, call, evidence)
 	}
+	if strings.HasPrefix(short, "keywrap.") {
+		return keyWrapCall(short, call, evidence)
+	}
+	if short == "cmac.CMAC" || short == "cmac.CMAC.finalize" || short == "cmac.CMAC.verify" {
+		return cmacCall(short, call, evidence)
+	}
 	if strings.HasPrefix(short, "ciphers.aead.") {
 		class, method, _ := strings.Cut(strings.TrimPrefix(short, "ciphers.aead."), ".")
 		label, known := aeadNames[class]
@@ -207,6 +213,72 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 		return algorithm("Fernet", cdx.CryptoPrimitiveCombiner, operation(strings.TrimPrefix(name, "cryptography.fernet.Fernet."))), true
 	}
 	return cdx.Component{}, false
+}
+
+func keyWrapCall(name string, call value, evidence *inventory.Evidence) (cdx.Component, bool) {
+	padded := false
+	function := cdx.CryptoFunctionEncrypt
+	switch name {
+	case "keywrap.aes_key_wrap":
+	case "keywrap.aes_key_unwrap":
+		function = cdx.CryptoFunctionDecrypt
+	case "keywrap.aes_key_wrap_with_padding":
+		padded = true
+	case "keywrap.aes_key_unwrap_with_padding":
+		padded, function = true, cdx.CryptoFunctionDecrypt
+	default:
+		return cdx.Component{}, false
+	}
+	label := "AES-KW"
+	if padded {
+		label = "AES-KWP"
+	}
+	component := algorithm(label, cdx.CryptoPrimitiveKeyWrap, function)
+	a := component.CryptoProperties.AlgorithmProperties
+	a.AlgorithmFamily = "AES"
+	parameter(&component, evidence, "key-size-bits", argument(call, 0, "wrapping_key"), true)
+	// RFC 5649 section 5 assigns distinct identifiers to KW and KWP.
+	oids := map[bool]map[string]string{
+		false: {"128": "2.16.840.1.101.3.4.1.5", "192": "2.16.840.1.101.3.4.1.25", "256": "2.16.840.1.101.3.4.1.45"},
+		true:  {"128": "2.16.840.1.101.3.4.1.8", "192": "2.16.840.1.101.3.4.1.28", "256": "2.16.840.1.101.3.4.1.48"},
+	}
+	component.CryptoProperties.OID = oids[padded][a.ParameterSetIdentifier]
+	return component, true
+}
+
+func cmacCall(name string, call value, evidence *inventory.Evidence) (cdx.Component, bool) {
+	constructor := call
+	function := cdx.CryptoFunctionTag
+	if name != "cmac.CMAC" {
+		constructor = receiver(call)
+	}
+	if name == "cmac.CMAC.verify" {
+		function = cdx.CryptoFunctionVerify
+	}
+	for depth := 0; depth < 16 && symbol(constructor.Base) == primitives+"cmac.CMAC.copy"; depth++ {
+		if len(constructor.Modified) != 0 {
+			return cdx.Component{}, false
+		}
+		constructor = receiver(constructor)
+	}
+	if len(constructor.Modified) != 0 {
+		return cdx.Component{}, false
+	}
+	component := algorithm("CMAC", cdx.CryptoPrimitiveMAC, function)
+	a := component.CryptoProperties.AlgorithmProperties
+	a.AlgorithmFamily = "CMAC"
+	cipher := argument(constructor, 0, "algorithm")
+	if cipher.Kind == "call" && len(cipher.Modified) == 0 &&
+		strings.HasPrefix(symbol(cipher.Base), primitives+"ciphers.algorithms.") {
+		if inner, known := cryptographyCall(symbol(cipher.Base), cipher, evidence); known &&
+			inner.CryptoProperties.AlgorithmProperties.Primitive == cdx.CryptoPrimitiveBlockCipher {
+			component.Name = inner.Name + "-CMAC"
+			a.ParameterSetIdentifier = inner.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier
+			return component, true
+		}
+	}
+	evidence.Unresolved = append(evidence.Unresolved, "underlying-algorithm", "key-size-bits")
+	return component, true
 }
 
 func certificateRequest(name, format string) cdx.Component {

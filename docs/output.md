@@ -194,6 +194,9 @@ Known OIDs are emitted in `cryptoProperties.oid`. The bounded mappings cover
 fixed hashes, supported SHA-2/SHA-3 HMAC identities, resolved AES mode/key-size
 combinations, explicit RSA-OAEP/PSS schemes, Ed25519/Ed448 and X25519/X448
 identities, ML-KEM and ML-DSA parameter sets, and recognized X.509 signature algorithms.
+AES-KW/AES-KWP use the native `key-wrap` primitive and their
+[RFC 5649 identifiers](https://www.rfc-editor.org/rfc/rfc5649#section-5); no
+nonstandard block-mode enum or PKCS#7 padding is invented for key wrapping.
 Mappings follow the [NIST CSOR](https://csrc.nist.gov/projects/computer-security-objects-register/algorithm-registration),
 [RFC 4231](https://www.rfc-editor.org/rfc/rfc4231),
 [RFC 8017](https://www.rfc-editor.org/rfc/rfc8017), and

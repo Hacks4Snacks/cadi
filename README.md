@@ -46,6 +46,16 @@ coverage and diagnostics. The summary goes to stderr.
 For analyzer selection, combined inputs, exclusions, and offline operation, start
 with the [scanning guide](docs/scanning.md).
 
+## Releases
+
+Release automation prepares versioned binaries for Linux, macOS, and Windows on
+amd64 and arm64, with SHA-256 checksums. Archives include the documentation and
+the bundled CycloneDX schema license and attribution. Python and Go analysis
+still need their respective local runtimes; see the [scanning guide](docs/scanning.md#build-and-run).
+
+See [release setup and maintainer workflow](docs/development.md#release-automation)
+for publication prerequisites, Conventional Commits, and release recovery.
+
 ## Documentation
 
 | Guide                                       | Covers                                                                            |
@@ -57,7 +67,7 @@ with the [scanning guide](docs/scanning.md).
 | [TLS and SSH probes](docs/runtime.md)       | Explicit endpoint scans, mTLS, trust, and observation limits                      |
 | [CBOM output](docs/output.md)               | Evidence, native crypto fields, dependency context, exit codes, and output safety |
 | [Scan reports](docs/scan-report.md)         | Structured execution metadata, diagnostics, and coverage                          |
-| [Development](docs/development.md)          | Tests, build identity, package layout, and extending collectors                   |
+| [Development](docs/development.md)          | Tests, build identity, releases, package layout, and extending collectors         |
 
 ## Boundaries
 

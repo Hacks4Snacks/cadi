@@ -11,6 +11,46 @@ import (
 func asymmetricCall(name string, call value, evidence *inventory.Evidence) (cdx.Component, bool) {
 	short := strings.TrimPrefix(name, "asymmetric.")
 	switch short {
+	case "ec.ECDH":
+		component := algorithm("ECDH", cdx.CryptoPrimitiveKeyAgree, "")
+		component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "ECDH"
+		return component, true
+	case "x25519.X25519PrivateKey.exchange", "x448.X448PrivateKey.exchange":
+		if len(receiver(call).Modified) != 0 {
+			return cdx.Component{}, false
+		}
+		label, oid := "X25519", inventory.OIDX25519
+		if short == "x448.X448PrivateKey.exchange" {
+			label, oid = "X448", inventory.OIDX448
+		}
+		component := algorithm(label, cdx.CryptoPrimitiveKeyAgree, cdx.CryptoFunctionKeyderive)
+		a := component.CryptoProperties.AlgorithmProperties
+		a.AlgorithmFamily, a.EllipticCurve = "ECDH", inventory.CurveID(label)
+		component.CryptoProperties.OID = oid
+		return component, true
+	case "ec.EllipticCurvePrivateKey.exchange":
+		constructor := receiver(call)
+		if len(constructor.Modified) != 0 {
+			return cdx.Component{}, false
+		}
+		component := algorithm("Elliptic-curve key agreement", cdx.CryptoPrimitiveKeyAgree, cdx.CryptoFunctionKeyderive)
+		selected := argument(call, 0, "algorithm")
+		if selected.Kind == "call" && len(selected.Modified) == 0 &&
+			symbol(selected.Base) == primitives+"asymmetric.ec.ECDH" {
+			component.Name = "ECDH"
+			component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "ECDH"
+		} else {
+			evidence.Unresolved = append(evidence.Unresolved, "algorithm")
+		}
+		var curve value
+		switch symbol(constructor.Base) {
+		case primitives + "asymmetric.ec.generate_private_key":
+			curve = argument(constructor, 0, "curve")
+		case primitives + "asymmetric.ec.derive_private_key":
+			curve = argument(constructor, 1, "curve")
+		}
+		setCurve(&component, evidence, curve)
+		return component, true
 	case "rsa.generate_private_key":
 		component := algorithm("RSA", cdx.CryptoPrimitivePKE, cdx.CryptoFunctionKeygen)
 		parameter(&component, evidence, "key-size-bits", argument(call, 1, "key_size"), false)
@@ -135,7 +175,7 @@ func rsaScheme(component *cdx.Component, call value, method string) {
 
 func setCurve(component *cdx.Component, evidence *inventory.Evidence, v value) {
 	name := symbol(v.Base)
-	if v.Kind == "call" && strings.HasPrefix(name, primitives+"asymmetric.ec.") {
+	if v.Kind == "call" && len(v.Modified) == 0 && strings.HasPrefix(name, primitives+"asymmetric.ec.") {
 		if curve, known := curves[strings.TrimPrefix(name, primitives+"asymmetric.ec.")]; known {
 			component.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID(curve)
 			return
