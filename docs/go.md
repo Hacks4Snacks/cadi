@@ -192,6 +192,11 @@ checksums are missing, CipherTrail prepares the selected packages using the
 existing Go proxy, private-module, checksum-service, and VCS authentication
 settings, then retries source analysis offline.
 
+Package discovery, dependency preparation, and typed loading share the selected
+build flags, including `--tags`, and the requested `--goos`/`--goarch` environment.
+Tagged dependencies are prepared for that same context; users do not need to
+repeat CLI tags in `GOFLAGS`. Isolated-manifest flags are preserved throughout.
+
 ```sh
 ./bin/ciphertrail scan /path/to/repository --output cbom.json
 ```

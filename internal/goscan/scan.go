@@ -154,14 +154,14 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 			returnErr = errors.Join(returnErr, fmt.Errorf("clean isolated manifests: %w", err))
 		}
 	}()
+	buildFlags := slices.Clone(files.flags)
+	if s.Tags != "" {
+		buildFlags = append(buildFlags, "-tags="+s.Tags)
+	}
 	config := &packages.Config{
 		Context: ctx, Dir: directory, Env: files.env,
 		Mode:       packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedDeps | packages.NeedModule,
-		BuildFlags: []string{"-mod=readonly"},
-	}
-	config.BuildFlags = append(config.BuildFlags, files.flags...)
-	if s.Tags != "" {
-		config.BuildFlags = append(config.BuildFlags, "-tags="+s.Tags)
+		BuildFlags: append([]string{"-mod=readonly"}, buildFlags...),
 	}
 	prepared := false
 	selectRoots := func(loaded []*packages.Package) []*packages.Package {
@@ -202,7 +202,7 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 				preparePatterns = append(preparePatterns, pkg.PkgPath)
 			}
 		}
-		preparationErr := files.prepare(ctx, directory, s.environment(s.Offline), preparePatterns)
+		preparationErr := files.prepare(ctx, directory, s.environment(s.Offline), buildFlags, preparePatterns)
 		status := "prepared"
 		if preparationErr != nil {
 			status = "failed"

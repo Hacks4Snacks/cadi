@@ -52,6 +52,113 @@ func configMapDocument(t *testing.T, payload string, binary bool) string {
 	return string(data)
 }
 
+func TestEmbeddedResourceRecognitionUsesParsedKeys(t *testing.T) {
+	variants := []struct{ name, payload string }{
+		{"plain", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: sample}\nspec: {privateKey: {algorithm: RSA, size: 2048}}\n"},
+		{"single-quoted", "'apiVersion': cert-manager.io/v1\n'kind': Certificate\nmetadata: {name: sample}\nspec: {privateKey: {algorithm: RSA, size: 2048}}\n"},
+		{"double-quoted", "\"apiVersion\": cert-manager.io/v1\n\"kind\": Certificate\nmetadata: {name: sample}\nspec: {privateKey: {algorithm: RSA, size: 2048}}\n"},
+		{"escaped-yaml-keys", "\"api\\x56ersion\": cert-manager.io/v1\n\"k\\u0069nd\": Certificate\nmetadata: {name: sample}\nspec: {privateKey: {algorithm: RSA, size: 2048}}\n"},
+		{"flow", "{'apiVersion': cert-manager.io/v1, 'kind': Certificate, metadata: {name: sample}, spec: {privateKey: {algorithm: RSA, size: 2048}}}\n"},
+		{"escaped-json-keys", `{"\u0061piVersion":"cert-manager.io/v1","k\u0069nd":"Certificate","metadata":{"name":"sample"},"spec":{"privateKey":{"algorithm":"RSA","size":2048}}}`},
+	}
+	for _, variant := range variants {
+		for _, container := range []string{"data", "binaryData", "bootstrap"} {
+			t.Run(variant.name+"/"+container, func(t *testing.T) {
+				document := configMapDocument(t, variant.payload, container == "binaryData")
+				field, file := "/"+container+"/profile.yaml", ""
+				if container == "bootstrap" {
+					field, file = "/spec/files/0/content", "/etc/certificate.yaml"
+					data, err := json.Marshal(map[string]any{
+						"apiVersion": "bootstrap.cluster.x-k8s.io/v1beta1", "kind": "KubeadmConfig",
+						"metadata": map[string]string{"name": "bootstrap"},
+						"spec": map[string]any{"files": []map[string]string{
+							{"path": file, "content": variant.payload},
+						}},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					document = string(data)
+				}
+				result, err := collectManifest(t, document)
+				if err != nil || len(result.Diagnostics) != 0 {
+					t.Fatalf("equivalent resource syntax failed: %v %+v", err, result.Diagnostics)
+				}
+				counts := map[string]int{}
+				for _, entry := range result.Entries {
+					if entry.Component.Type != cdx.ComponentTypeCryptographicAsset {
+						continue
+					}
+					counts[entry.Component.Name]++
+					context := entry.Evidence.Context
+					if context == nil || context.Document != 1 || context.Field != field ||
+						len(context.Embedded) != 1 || entry.Evidence.Kind != "configured" || entry.Evidence.Location != "rendered.yaml" ||
+						entry.Evidence.Line != 1 {
+						t.Fatalf("embedded source context changed: %+v", entry.Evidence)
+					}
+					inner := context.Embedded[0]
+					line := 4
+					if variant.name == "flow" || variant.name == "escaped-json-keys" {
+						line = 1
+					}
+					if inner.Resource == nil || inner.Resource.APIVersion != "cert-manager.io/v1" ||
+						inner.Resource.Kind != "Certificate" || inner.Resource.Name != "sample" ||
+						inner.Document != 1 || inner.Line != line || inner.File != file {
+						t.Fatalf("parsed resource identity/origin missing: %+v", inner)
+					}
+					switch entry.Component.Name {
+					case "RSA":
+						if entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "2048" {
+							t.Error("parsed algorithm parameters differ by representation")
+						}
+					case "cert-manager Private key configuration":
+						key := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties
+						if key.Size == nil || *key.Size != 2048 || inner.Field != "/spec/privateKey" {
+							t.Error("private-key parameters or field location missing")
+						}
+					case "cert-manager Certificate configuration":
+						if inner.Field != "/spec" {
+							t.Error("certificate field location missing")
+						}
+					}
+				}
+				if len(counts) != 3 || counts["RSA"] != 1 || counts["cert-manager Private key configuration"] != 1 ||
+					counts["cert-manager Certificate configuration"] != 1 {
+					t.Fatalf("equivalent syntax changed crypto inventory: %v", counts)
+				}
+				data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+				if err != nil || strings.Contains(string(data), "PRIVATE_UNRELATED_SENTINEL") {
+					t.Fatalf("invalid or unsafe embedded output: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestEmbeddedNonResourcesAreNotInventedManifests(t *testing.T) {
+	for _, payload := range []string{
+		"PRIVATE_SCALAR_SENTINEL",
+		`{"message":"PRIVATE_JSON_SENTINEL","keys":["apiVersion","kind"]}`,
+		"value: |\n  apiVersion: cert-manager.io/v1\n  kind: Certificate\n",
+		"#!/bin/sh\ncat <<'EOF'\napiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: script}\nspec: {}\nEOF\n",
+		`{"message":"PRIVATE_MALFORMED_SENTINEL`,
+	} {
+		result, err := collectManifest(t, configMapDocument(t, payload, false))
+		if err != nil || len(result.Diagnostics) != 0 {
+			t.Fatalf("ordinary embedded content became a failed manifest: %v %+v", err, result.Diagnostics)
+		}
+		for _, entry := range result.Entries {
+			if entry.Component.Type == cdx.ComponentTypeCryptographicAsset {
+				t.Fatal("non-resource content produced a crypto finding")
+			}
+		}
+		data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+		if err != nil || strings.Contains(string(data), "PRIVATE_") {
+			t.Fatalf("non-resource contents escaped into the inventory: %v", err)
+		}
+	}
+}
+
 func bootstrapProfile(t *testing.T) string {
 	t.Helper()
 	data, err := yaml.Marshal(map[string]any{

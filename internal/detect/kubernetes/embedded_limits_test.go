@@ -21,6 +21,8 @@ func TestMalformedEmbeddedPayloadsPreserveOtherFindings(t *testing.T) {
 		"apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources: []\nresources: PRIVATE_MALFORMED_SENTINEL\n",
 		"apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources: &alias [*alias]\n",
 		"apiVersion: apiserver.config.k8s.io/v1\nkind: EncryptionConfiguration\nresources: [{resources: [secrets], providers: [{aesgcm: {}, identity: {}}]}]\n",
+		"'apiVersion': apiserver.config.k8s.io/v1\n'kind': EncryptionConfiguration\nresources: []\nresources: PRIVATE_MALFORMED_SENTINEL\n",
+		`{"\u0061piVersion":"apiserver.config.k8s.io/v1","k\u0069nd":"EncryptionConfiguration","resources":[],"resources":"PRIVATE_MALFORMED_SENTINEL"}`,
 	} {
 		data := certificateManifest + "---\n" + configMapDocument(t, payload, false)
 		result, err := collectManifest(t, data)
@@ -36,6 +38,13 @@ func TestMalformedEmbeddedPayloadsPreserveOtherFindings(t *testing.T) {
 }
 
 func TestEmbeddedDepthAndAggregateBudgets(t *testing.T) {
+	leaf := configMapDocument(t, "PRIVATE_UNRELATED_SENTINEL", false)
+	for range MaxEmbeddedDepth {
+		leaf = configMapDocument(t, leaf, false)
+	}
+	if _, err := collectManifest(t, leaf); err != nil {
+		t.Fatalf("non-resource leaf consumed an additional resource nesting level: %v", err)
+	}
 	data := encryptionManifest
 	for range MaxEmbeddedDepth + 1 {
 		data = configMapDocument(t, data, false)

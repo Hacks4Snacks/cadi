@@ -73,7 +73,7 @@ func (r resource) documents(ctx context.Context, data []byte, strict bool) (bool
 				found = true
 				continue
 			}
-			if strict || looksLikeResource(chunk.data) {
+			if strict || malformedResourceHint(chunk.data) {
 				found = true
 				failures = errors.Join(failures, scanner.failure(nil, "invalid YAML/JSON"))
 			}
@@ -88,6 +88,9 @@ func (r resource) documents(ctx context.Context, data []byte, strict bool) (bool
 			continue
 		}
 		found = true
+		if len(scanner.evidence.Context.Embedded) > MaxEmbeddedDepth {
+			return found, errors.Join(failures, fmt.Errorf("embedded configuration exceeds %d decoded levels", MaxEmbeddedDepth))
+		}
 		if err := validateNodes(ctx, root, 0, &r.budget.nodes); err != nil {
 			if ctx.Err() != nil {
 				return found, errors.Join(failures, ctx.Err())

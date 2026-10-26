@@ -66,10 +66,7 @@ func (r resource) embedded(ctx context.Context, data []byte, evidence inventory.
 		return nil
 	}
 	pem := bytes.HasPrefix(trimmed, []byte("-----BEGIN "))
-	if !pem && !looksLikeResource(data) {
-		return nil
-	}
-	if len(evidence.Context.Embedded) >= MaxEmbeddedDepth {
+	if pem && len(evidence.Context.Embedded) >= MaxEmbeddedDepth {
 		return fmt.Errorf("embedded configuration exceeds %d decoded levels", MaxEmbeddedDepth)
 	}
 	context := *evidence.Context

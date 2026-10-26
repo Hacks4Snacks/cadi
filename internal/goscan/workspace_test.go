@@ -138,6 +138,73 @@ func TestColdCachePreparationPreservesManifests(t *testing.T) {
 	}
 }
 
+func TestTaggedColdCachePreparationUsesSelectedBuildContext(t *testing.T) {
+	for _, workspace := range []bool{false, true} {
+		for _, untaggedSource := range []bool{false, true} {
+			t.Run(fmt.Sprintf("workspace=%v/untagged-source=%v", workspace, untaggedSource), func(t *testing.T) {
+				_, requests := coldModuleProxy(t, false)
+				t.Setenv("GOFLAGS", "-modcacherw -tags=unselected")
+				directory, originals := coldModuleFixture(t, workspace)
+				originals["root.go"] = append([]byte("//go:build production && integration && linux && amd64\n\n"), originals["root.go"]...)
+				if untaggedSource {
+					originals["base.go"] = []byte("package root\nfunc Base() {}\n")
+				}
+				for name, data := range originals {
+					if err := os.WriteFile(filepath.Join(directory, name), data, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				source := Source{Path: directory, Tags: "production,integration", GOOS: "linux", GOARCH: "amd64", Offline: true}
+				if _, err := source.Collect(context.Background()); err == nil {
+					t.Fatal("cold offline scan unexpectedly succeeded")
+				}
+				if requests.Load() != 0 {
+					t.Fatal("offline tagged scan contacted the proxy")
+				}
+				source.Offline = false
+				result, err := source.Collect(context.Background())
+				if err != nil {
+					t.Fatalf("tagged automatic preparation failed: %v", err)
+				}
+				if requests.Load() == 0 {
+					t.Fatal("missing tagged dependency was not downloaded")
+				}
+				hashes := 0
+				for _, entry := range result.Entries {
+					if entry.Component.Name == "SHA-256" && entry.Evidence.Location == "root.go" {
+						hashes++
+					}
+				}
+				if hashes != 1 {
+					t.Fatalf("selected build context lost its crypto call: %d findings", hashes)
+				}
+				if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+					t.Fatal(err)
+				}
+				before := requests.Load()
+				source.Offline = true
+				if _, err := source.Collect(context.Background()); err != nil {
+					t.Fatalf("prepared tagged dependency was not reusable offline: %v", err)
+				}
+				if requests.Load() != before {
+					t.Fatal("warm offline scan contacted the proxy")
+				}
+				for name, before := range originals {
+					after, err := os.ReadFile(filepath.Join(directory, name))
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatalf("target input changed: %s", name)
+					}
+				}
+				for _, sum := range []string{"go.sum", "go.work.sum", "helper/go.sum"} {
+					if _, err := os.Stat(filepath.Join(directory, sum)); !os.IsNotExist(err) {
+						t.Fatalf("created target checksum file: %s", sum)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestPreparationDoesNotDownloadUnusedTransitivePlaceholders(t *testing.T) {
 	_, _ = coldModuleProxy(t, false)
 	directory, _ := coldModuleFixture(t, false)

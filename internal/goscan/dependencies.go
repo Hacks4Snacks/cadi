@@ -98,17 +98,17 @@ func isolateModuleFiles(ctx context.Context, directory string, env []string) (*m
 	return files, nil
 }
 
-func (m *moduleFiles) prepare(ctx context.Context, directory string, env []string, patterns []string) error {
+func (m *moduleFiles) prepare(ctx context.Context, directory string, env, buildFlags, patterns []string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	env = setEnv(env, "GOWORK", envValue(m.env, "GOWORK"))
 	env = setEnv(env, "GIT_TERMINAL_PROMPT", "0")
-	args := append([]string{"list", "-deps", "-mod=mod"}, m.flags...)
-	args = append(args, patterns...)
+	moduleMode := "mod"
 	if m.workspace {
-		args = append([]string{"list", "-deps", "-mod=readonly"}, m.flags...)
-		args = append(args, patterns...)
+		moduleMode = "readonly"
 	}
+	args := append([]string{"list", "-deps", "-mod=" + moduleMode}, buildFlags...)
+	args = append(args, patterns...)
 	command := exec.CommandContext(ctx, "go", args...)
 	command.Dir, command.Env = directory, env
 	command.WaitDelay = 5 * time.Second

@@ -73,6 +73,14 @@ expressions, and bootstrap files. CipherTrail follows those structured layers:
 - Standalone or nested kubeadm `ClusterConfiguration`, `InitConfiguration`, and
   `JoinConfiguration`, plus apiserver `EncryptionConfiguration`.
 
+Embedded YAML/JSON is recognized from parsed root `apiVersion` and `kind` keys,
+not raw keyword spellings. Quoted YAML keys, flow mappings, and escaped JSON keys
+are equivalent inputs in ConfigMap `data`, base64 `binaryData`, and bootstrap
+file content. Ordinary values without a resource header remain non-resources.
+Shebang-prefixed scripts are skipped rather than searched for manifest fragments.
+Candidate parsing uses the shared byte budget; resource nesting limits apply
+only when a resource is recognized, not to unrelated scalar leaf values.
+
 The bootstrap models record TLS minimum versions and configured cipher suites
 for the API server, controller manager, scheduler, etcd, and init/join kubelets.
 Both argument maps and name/value lists are supported. TLS and encryption

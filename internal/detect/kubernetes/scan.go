@@ -257,7 +257,8 @@ func splitDocuments(data []byte) []documentChunk {
 	return documents
 }
 
-func looksLikeResource(data []byte) bool {
+// malformedResourceHint is used only after decoding fails, never to exclude a valid document.
+func malformedResourceHint(data []byte) bool {
 	return (bytes.Contains(data, []byte("apiVersion:")) || bytes.Contains(data, []byte(`"apiVersion"`))) &&
 		(bytes.Contains(data, []byte("kind:")) || bytes.Contains(data, []byte(`"kind"`)))
 }
