@@ -17,7 +17,8 @@ the evidence behind each finding.
 - **Probe explicitly selected TLS and SSH endpoints** for handshake or host-key
   evidence, without logging in or running remote commands.
 - **Combine inputs into one CBOM**, with an optional terminal summary and a
-  separate scan report for collection details.
+  separate scan report for collection details. Directory scans use one enclosing
+  project subject across their languages and file types.
 
 Findings distinguish **configured**, **present**, and **observed** evidence.
 Source configuration is not proof of runtime use, and successful collection does

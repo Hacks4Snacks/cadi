@@ -57,7 +57,8 @@ separate boundaries:
 - [`internal/probe`](../internal/probe): explicitly authorized TLS/SSH interrogation.
 - [`internal/scan`](../internal/scan): validated requests, built-in composition,
   normalized/deduplicated planning, execution, cancellation, coverage, and
-  structured execution reports.
+  structured execution reports; owns directory-project identity and attaches
+  collector contexts without regenerating their component references.
 - [`internal/inventory`](../internal/inventory): evidence, ownership, relationships,
   stable references, and reusable configuration constructors.
 - [`internal/export/cyclonedx`](../internal/export/cyclonedx): graph selection,

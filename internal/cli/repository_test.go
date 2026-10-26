@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -55,6 +56,268 @@ func TestMixedRepositoryInputsAndAnalyzerSelection(t *testing.T) {
 				t.Fatal("coverage summary missing")
 			}
 		})
+	}
+}
+
+func TestRepositorySubjectIsStableAcrossAnalyzers(t *testing.T) {
+	root := t.TempDir()
+	writeRepositoryFile(t, root, "go.mod", "module example.test/project\n\ngo 1.27.0\n")
+	writeRepositoryFile(t, root, "main.go", "package project\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n")
+	writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha384(b'value')\n")
+	writeRepositoryFile(t, root, "certificate.yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: sample}\nspec: {}\n")
+	_, _, certificate, _ := testutil.Identity(t)
+	writeRepositoryFile(t, root, "cert.pem", string(certificate))
+	var project cdx.Component
+	crypto := map[string]cdx.Component{}
+	for _, analyzers := range []string{"go", "python", "kubernetes", "artifact", "go,python,kubernetes,artifact"} {
+		t.Run(analyzers, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(), []string{"scan", root, "--analyzers", analyzers, "--offline", "--summary"}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("scan failed: %d %s", code, stderr.String())
+			}
+			var bom cdx.BOM
+			if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+				t.Fatal(err)
+			}
+			subject := bom.Metadata.Component
+			if subject == nil || subject.Type != cdx.ComponentTypeApplication || subject.Name != filepath.Base(root) {
+				t.Fatalf("root project subject missing: %+v", subject)
+			}
+			if project.BOMRef == "" {
+				project = *subject
+			} else if !reflect.DeepEqual(project, *subject) {
+				t.Fatal("analyzer selection changed the project identity or evidence")
+			}
+			edges := map[string][]string{}
+			for _, dependency := range *bom.Dependencies {
+				edges[dependency.Ref] = *dependency.Dependencies
+			}
+			reachable := map[string]bool{}
+			var visit func(string)
+			visit = func(ref string) {
+				if reachable[ref] {
+					return
+				}
+				reachable[ref] = true
+				for _, child := range edges[ref] {
+					visit(child)
+				}
+			}
+			visit(subject.BOMRef)
+			for _, component := range *bom.Components {
+				if component.Type != cdx.ComponentTypeCryptographicAsset {
+					continue
+				}
+				if !reachable[component.BOMRef] {
+					t.Errorf("finding is disconnected from its project: %s", component.Name)
+				}
+				if analyzers != "go,python,kubernetes,artifact" {
+					crypto[component.BOMRef] = component
+				} else if prior, exists := crypto[component.BOMRef]; !exists || !reflect.DeepEqual(prior, component) {
+					t.Errorf("combining analyzers changed crypto identity/evidence: %s", component.Name)
+				}
+			}
+		})
+	}
+}
+
+func TestRepositoryProjectBoundariesAndOverlap(t *testing.T) {
+	for _, scenario := range []struct {
+		name                  string
+		boundary, recursive   bool
+		explicitChild, hidden bool
+		wantProjects, files   int
+	}{
+		{"ordinary-overlap", false, false, true, false, 1, 2},
+		{"nested-boundary", true, false, false, false, 1, 1},
+		{"explicit-nested-repository", true, false, true, false, 2, 2},
+		{"recursive-root", true, true, false, false, 1, 2},
+		{"recursive-explicit-nested-repository", true, true, true, false, 2, 2},
+		{"nested-repository-in-excluded-directory", true, false, true, true, 2, 2},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			root := t.TempDir()
+			childPath := "child"
+			if scenario.hidden {
+				childPath = "examples/child"
+			}
+			child := filepath.Join(root, filepath.FromSlash(childPath))
+			writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'root')\n")
+			writeRepositoryFile(t, root, childPath+"/app.py", "import hashlib\nhashlib.sha512(b'child')\n")
+			if scenario.boundary {
+				writeRepositoryFile(t, root, childPath+"/.git", "gitdir: unused\n")
+			}
+			reportPath := filepath.Join(t.TempDir(), "report.json")
+			args := []string{"scan", root, "--analyzers", "python", "--offline", "--scan-report", reportPath}
+			if scenario.explicitChild {
+				args = append(args, child, filepath.Join(child, "app.py"))
+			}
+			if scenario.recursive {
+				args = append(args, "--include-nested-repos")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
+				t.Fatalf("scan failed: %d %s", code, stderr.String())
+			}
+			var bom cdx.BOM
+			if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+				t.Fatal(err)
+			}
+			if (bom.Metadata.Component != nil) != (scenario.wantProjects == 1) {
+				t.Errorf("incorrect primary project: %+v", bom.Metadata.Component)
+			}
+			components := append([]cdx.Component{}, *bom.Components...)
+			if bom.Metadata.Component != nil {
+				components = append(components, *bom.Metadata.Component)
+			}
+			projects, findings := 0, 0
+			for _, component := range components {
+				if component.Type == cdx.ComponentTypeApplication && component.Description == "Source project inventory for the selected directory root" {
+					projects++
+				}
+				if component.Type == cdx.ComponentTypeCryptographicAsset {
+					findings++
+				}
+			}
+			files := 0
+			for _, collection := range readScanReport(t, reportPath).Collections {
+				for _, coverage := range collection.Coverage {
+					if coverage.Analyzer == "python" {
+						files += coverage.Files
+					}
+				}
+			}
+			if projects != scenario.wantProjects || files != scenario.files || findings != scenario.files {
+				t.Fatalf("scope or work changed: projects=%d files=%d findings=%d", projects, files, findings)
+			}
+		})
+	}
+}
+
+func TestIndependentEmptyProjectsRemainVisible(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"scan", first, second, "--offline"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("empty project scan failed: %d %s", code, stderr.String())
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+		t.Fatal(err)
+	}
+	if bom.Metadata.Component != nil || len(*bom.Components) != 2 {
+		t.Fatal("aggregate empty projects were discarded or an arbitrary primary was chosen")
+	}
+	for _, component := range *bom.Components {
+		if component.Type != cdx.ComponentTypeApplication || component.CryptoProperties != nil {
+			t.Fatal("empty project scope was mistaken for cryptographic use")
+		}
+	}
+}
+
+func TestSeparateGoProjectsPartitionModuleWork(t *testing.T) {
+	for _, recursive := range []bool{false, true} {
+		t.Run(map[bool]string{false: "bounded", true: "recursive"}[recursive], func(t *testing.T) {
+			root := t.TempDir()
+			writeRepositoryFile(t, root, "go.mod", "module example.test/outer\n\ngo 1.27.0\n")
+			writeRepositoryFile(t, root, "main.go", "package outer\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n")
+			writeRepositoryFile(t, root, "child/.git", "gitdir: unused\n")
+			writeRepositoryFile(t, root, "child/go.mod", "module example.test/inner\n\ngo 1.27.0\n")
+			writeRepositoryFile(t, root, "child/main.go", "package inner\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n")
+			reportPath := filepath.Join(t.TempDir(), "report.json")
+			args := []string{"scan", root, filepath.Join(root, "child"), "--analyzers", "go", "--offline", "--scan-report", reportPath}
+			if recursive {
+				args = append(args, "--include-nested-repos")
+			}
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
+				t.Fatalf("scan failed: %d %s", code, stderr.String())
+			}
+			var bom cdx.BOM
+			if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+				t.Fatal(err)
+			}
+			if bom.Metadata.Component != nil {
+				t.Fatal("independent Go repositories were assigned one primary project")
+			}
+			for _, collection := range readScanReport(t, reportPath).Collections {
+				for _, coverage := range collection.Coverage {
+					if coverage.Analyzer == "go" && (coverage.Modules != 1 || coverage.Files != 1 || coverage.Findings != 1) {
+						t.Errorf("work crossed project scopes or was counted twice: %+v", coverage)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestProjectWrappingPreservesCollectedAssetReferences(t *testing.T) {
+	root := t.TempDir()
+	_, _, certificate, _ := testutil.Identity(t)
+	writeRepositoryFile(t, root, "cert.pem", string(certificate))
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"scan", root, "--analyzers", "artifact"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("project scan failed: %d %s", code, stderr.String())
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+		t.Fatal(err)
+	}
+	if bom.Metadata.Component == nil {
+		t.Fatal("artifact-only directory has no project subject")
+	}
+	refs := map[string]bool{}
+	for _, component := range *bom.Components {
+		if component.Type == cdx.ComponentTypeCryptographicAsset {
+			refs[component.BOMRef] = true
+		}
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"scan", filepath.Join(root, "cert.pem"), "--analyzers", "artifact"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("standalone material scan failed: %d %s", code, stderr.String())
+	}
+	var standalone cdx.BOM
+	if err := json.Unmarshal(stdout.Bytes(), &standalone); err != nil {
+		t.Fatal(err)
+	}
+	if standalone.Metadata.Component != nil || len(*standalone.Components) != len(refs) {
+		t.Fatal("standalone material was assigned a project or its asset count changed")
+	}
+	for _, component := range *standalone.Components {
+		if !refs[component.BOMRef] {
+			t.Errorf("project wrapper changed a material identity: %s", component.Name)
+		}
+	}
+}
+
+func TestIndependentProjectsKeepSharedMaterialConsolidation(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	_, _, certificate, _ := testutil.Identity(t)
+	writeRepositoryFile(t, first, "cert.pem", string(certificate))
+	writeRepositoryFile(t, second, "cert.pem", string(certificate))
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"scan", first, second, "--analyzers", "artifact"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("scan failed: %d %s", code, stderr.String())
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+		t.Fatal(err)
+	}
+	if bom.Metadata.Component != nil {
+		t.Fatal("independent projects were assigned a single subject")
+	}
+	projects, certificates := 0, 0
+	for _, component := range *bom.Components {
+		if component.Type == cdx.ComponentTypeApplication {
+			projects++
+		}
+		if component.CryptoProperties != nil && component.CryptoProperties.AssetType == cdx.CryptoAssetTypeCertificate {
+			certificates++
+		}
+	}
+	if projects != 2 || certificates != 1 {
+		t.Fatalf("project context changed material consolidation: projects=%d certificates=%d", projects, certificates)
 	}
 }
 

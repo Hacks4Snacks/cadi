@@ -29,6 +29,12 @@ The optional JSON artifact has `reportFormat: "CipherTrailScanReport"` and
 component statistics, and a `collections` array with per-input target, outcome,
 errors, diagnostics, coverage, and structured `details`.
 
+Directory-associated collections include a `project-subject` detail containing
+the enclosing source-project `bom-ref`. This links overlapping input records and
+shared Python analysis back to their project without repeating absolute input
+targets in the CBOM header. Project context contributes to component statistics,
+not cryptographic finding counts.
+
 When a CBOM was generated, `bomLink` is a standard CycloneDX BOM-Link
 (`urn:cdx:<uuid>/<version>`) identifying that exact document. It shares the CBOM's
 generation timestamp and scanner identity. If CBOM encoding failed, no link is

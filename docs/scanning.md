@@ -30,6 +30,12 @@ and artifact analysis run where applicable and contribute to one CBOM.
 Repositories without Go modules or Python source record `not-applicable` for
 those analyzers rather than requiring their language tooling.
 
+Each selected directory has a source-project identity independent of its
+languages. A single logical root becomes the CBOM's primary subject; Go, Python,
+manifest, and local-artifact findings share that project context. See
+[document and primary-component identity](output.md#document-and-primary-component-identity)
+for aggregation and stable-reference behavior.
+
 Use `--analyzers` to restrict passive analysis:
 
 ```sh
@@ -108,6 +114,13 @@ still resolved and type-checked across repository boundaries; a boundary is not
 a way to suppress missing dependencies or compilation failures in required code.
 Normal dependency inventory includes the versions the target actually imports,
 not every module in an unrelated checkout.
+
+Ordinary overlapping directory inputs share their enclosing selected project.
+An explicitly selected nested Git repository remains a separate project even
+with `--include-nested-repos`; its files and modules are assigned to that input
+instead of being collected again through the ancestor. Such transferred work is
+recorded as `separate-project-root` omissions in the ancestor's scan-report scope.
+This does not change exclusions at each explicitly selected root.
 
 ## Shared repository exclusions
 

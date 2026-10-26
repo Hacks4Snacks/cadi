@@ -31,27 +31,24 @@ func readScanReport(t *testing.T, path string) scan.Report {
 }
 
 func TestReportIdentityAndPrimarySubject(t *testing.T) {
-	for _, scenario := range []string{"go", "nested-modules", "single-nested-module", "workspace", "no-crypto", "python", "overlap", "two-roots", "mixed-languages", "failed-additional-root"} {
+	for _, scenario := range []string{"go", "nested-modules", "single-nested-module", "workspace", "no-crypto", "empty", "python", "overlap", "two-roots", "mixed-languages", "partial-project", "failed-additional-root"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			paths := []string{root}
-			expectedName := "example.test/subject"
-			expectedType := cdx.ComponentTypeLibrary
+			expectedName := filepath.Base(root)
+			expectedType := cdx.ComponentTypeApplication
 			exit := 0
 			if scenario == "python" {
 				writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'value')\n")
-				expectedName, expectedType = filepath.Base(root)+" (Python source)", cdx.ComponentTypeApplication
 			} else if scenario == "workspace" || scenario == "single-nested-module" {
 				writeRepositoryFile(t, root, "child/go.mod", "module example.test/child\n\ngo 1.27.0\n")
 				writeRepositoryFile(t, root, "child/main.go", "package child\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n")
-				expectedName = "example.test/child"
 				if scenario == "workspace" {
 					writeRepositoryFile(t, root, "second/go.mod", "module example.test/second\n\ngo 1.27.0\n")
 					writeRepositoryFile(t, root, "second/main.go", "package second\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n")
 					writeRepositoryFile(t, root, "go.work", "go 1.27.0\nuse (\n./child\n./second\n)\n")
-					expectedName = ""
 				}
-			} else {
+			} else if scenario != "empty" {
 				writeRepositoryFile(t, root, "go.mod", "module example.test/subject\n\ngo 1.27.0\n")
 				source := "package subject\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n"
 				if scenario == "no-crypto" {
@@ -72,7 +69,9 @@ func TestReportIdentityAndPrimarySubject(t *testing.T) {
 				paths, expectedName = append(paths, second), ""
 			case "mixed-languages":
 				writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'value')\n")
-				expectedName = ""
+			case "partial-project":
+				writeRepositoryFile(t, root, "broken.py", "def incomplete(\n")
+				exit = 1
 			case "failed-additional-root":
 				paths = append(paths, filepath.Join(t.TempDir(), "missing"))
 				expectedName, exit = "", 1
@@ -98,6 +97,8 @@ func TestReportIdentityAndPrimarySubject(t *testing.T) {
 					}
 				} else if subject == nil || subject.Name != expectedName || subject.Type != expectedType || subject.BOMRef == "" {
 					t.Errorf("primary subject missing or incorrect: %+v", subject)
+				} else if subject.Version != "" || subject.PackageURL != "" || subject.Description == "" {
+					t.Error("project scope invented a release/package identity or omitted its description")
 				}
 				components := map[string]cdx.Component{}
 				if subject != nil {

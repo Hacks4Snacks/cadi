@@ -58,12 +58,14 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	edges := make(map[string]map[string]bool)
 	owners := make(map[string]map[string]bool)
 	provenances := make(map[string][]provenance)
+	var subjects []string
 	var metadata []cdx.Property
 	incomplete := false
 	for _, collection := range collections {
 		if err := collection.Result.Err(); err != nil {
 			return nil, err
 		}
+		subjects = append(subjects, collection.Result.Subjects...)
 		if collection.Err != nil {
 			incomplete = true
 		}
@@ -181,7 +183,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	scope := "full-dependencies"
 	if !options.IncludeDependencies {
 		scope = "crypto-focused"
-		focusGraph(components, edges, owners, subject)
+		focusGraph(components, edges, owners, subjects)
 	}
 	metadata = append(metadata, cdx.Property{Name: "ciphertrail:output-scope", Value: scope})
 	ordered := make([]cdx.Component, 0, len(components))
@@ -291,11 +293,8 @@ func addEdge(graph map[string]map[string]bool, source, target string) {
 	graph[source][target] = true
 }
 
-func focusGraph(components map[string]*cdx.Component, edges, owners map[string]map[string]bool, subject string) {
-	var pending []string
-	if subject != "" {
-		pending = append(pending, subject)
-	}
+func focusGraph(components map[string]*cdx.Component, edges, owners map[string]map[string]bool, subjects []string) {
+	pending := slices.Clone(subjects)
 	for ref, component := range components {
 		if component.Type == cdx.ComponentTypeCryptographicAsset {
 			pending = append(pending, ref)

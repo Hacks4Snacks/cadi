@@ -19,6 +19,8 @@ By default, the CBOM contains:
 - Cryptographic assets and their evidence.
 - Ownership context, including enclosing applications, container images, and
   Kubernetes configuration resources.
+- Identified input subjects, including directory-project scope, even when they
+  contain no cryptographic findings.
 - Explicit implementation dependencies and native cryptographic reference
   targets needed to explain those findings.
 
@@ -295,21 +297,56 @@ for empty or incomplete inventories. Document identity is independent of stable
 component and occurrence references; it is not a content hash or the scanner's
 release version.
 
-Collectors identify actual primary software components rather than guessing a
-subject from names or dependency order. When all non-deduplicated inputs agree on
-one collected subject, that component is placed in `metadata.component`, not
-duplicated in `components`. Its original `bom-ref`, facts, evidence, and graph
-links are preserved. The subject remains identifiable in crypto-focused output
-even when no cryptographic assets were found.
+For a directory input, scan orchestration creates one **source-project subject**
+for its selected root. Go modules, Python source, configuration resources, and
+local material are inventoried beneath that same project. Enabling an additional
+analyzer does not remove or change the primary project identity.
 
-Supported subjects include a root Go module (or the sole selected module),
-a Python source project, an explicitly selected Go binary, a single image, or an
-observed TLS/SSH endpoint. Ordinary nested Go modules remain in the same inventory
-without replacing an identified root module. Multiple distinct subjects,
-workspaces without a unique main module, mixed Go/Python ownership roots, or
-additional inputs without an identified subject remain aggregate reports with no
-invented main component. Standalone material and configuration scans do not
-fabricate an application identity.
+The source-project component uses:
+
+- `type: "application"` to represent the logical source-project scope, not an
+  assertion that a running or deployable application was observed.
+- The selected root directory's basename as its display name.
+- A deterministic `bom-ref` derived from the normalized absolute directory path,
+  independent of analyzer selection, findings, and output scope. Moving the
+  checkout changes this local scope identity; it is not a global repository ID.
+- A description identifying it as source-project inventory and a native `.`
+  occurrence denoting the selected root. Physical targets remain available in
+  the scan report.
+- No inferred project version, package URL, deployment state, or scanner version.
+
+When inputs agree on one subject, it appears in `metadata.component` and is not
+duplicated in `components`. Existing Go/Python components remain distinct beneath
+the project, using their original identities, facts, and evidence. Project
+ownership is added after collection without regenerating cryptographic asset
+references. Ordinary dependencies retain their dependency semantics; an imported
+library is not relabeled as project-owned source.
+
+| Selection | Subject behavior |
+|---|---|
+| One directory, with any analyzer combination | One source-project subject |
+| One directory containing several Go modules or a workspace | One enclosing project; relevant module contexts remain distinct |
+| A directory plus ordinary overlapping subdirectories/files | One project; shared work is deduplicated |
+| Explicitly selected independent repositories, including nested Git checkouts | Separate project components; no arbitrary primary subject |
+| A subdirectory without its enclosing repository root | A subject for the selected subtree, not the whole repository |
+| Explicit Go binary, single image, TLS/SSH endpoint, or standalone Python source | Existing collector-identified subject behavior |
+| Standalone material/configuration file | No fabricated project/application subject |
+
+A single selected root with `--include-nested-repos` still describes that selected
+scope. Explicitly selecting a nested independent repository keeps its project
+separate, including in recursive mode. A monorepo subject describes an enclosing
+inventory, not a claim that all its applications are one deployed application.
+
+Identified subjects remain visible in crypto-focused output even for empty or
+incomplete scans. Multiple distinct subjects remain in `components` rather than
+being promoted. Unknown additional inputs still prevent selection of an
+unambiguous primary subject. Coverage limits, collection errors, and excluded
+files are not hidden by project context.
+
+Compared with earlier output, a directory's Go module or Python component is no
+longer promoted by itself: the new enclosing project occupies `metadata.component`.
+This adds project context to total component counts without increasing
+cryptographic-finding counts or changing existing asset consolidation.
 
 Consumers must include `metadata.component` when indexing components or resolving
 dependency references. `--summary` and scan-report statistics account for it
