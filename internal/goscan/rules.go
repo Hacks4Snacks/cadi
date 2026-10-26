@@ -190,7 +190,12 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		return protocol("TLS", cdx.CryptoProtocolTypeTLS), true
 	case apiIdentity{"golang.org/x/crypto/ssh", "", "MarshalAuthorizedKey"},
 		apiIdentity{"golang.org/x/crypto/ssh", "PublicKey", "Marshal"}:
-		return keyOperation("Public key serialization"), true
+		c := keyOperation("Public key serialization")
+		c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "SSH"
+		if api.name == "MarshalAuthorizedKey" {
+			c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "OpenSSH"
+		}
+		return c, true
 	case apiIdentity{"golang.org/x/crypto/ssh", "PublicKey", "Verify"}:
 		c := inventory.Algorithm("SSH signature verification", cdx.CryptoPrimitiveSignature)
 		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionVerify}
@@ -442,11 +447,23 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		if name == "CreateCertificateRequest" || name == "ParseCertificateRequest" {
 			c := operation("PKCS#10 certificate request", cdx.CryptoAssetTypeRelatedCryptoMaterial)
 			c.CryptoProperties.RelatedCryptoMaterialProperties = &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypeOther}
+			if api.path == "crypto/x509" && api.receiver == "" {
+				c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "DER"
+			}
 			return c, true
 		}
 		if strings.HasPrefix(name, "Parse") || strings.HasPrefix(name, "Marshal") {
 			if strings.Contains(name, "Key") {
-				return keyOperation(name), true
+				c := keyOperation(name)
+				if api.path == "crypto/x509" && api.receiver == "" {
+					switch name {
+					case "ParsePKCS1PrivateKey", "ParsePKCS1PublicKey", "MarshalPKCS1PrivateKey", "MarshalPKCS1PublicKey",
+						"ParsePKCS8PrivateKey", "MarshalPKCS8PrivateKey", "ParsePKIXPublicKey", "MarshalPKIXPublicKey",
+						"ParseECPrivateKey", "MarshalECPrivateKey":
+						c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "DER"
+					}
+				}
+				return c, true
 			}
 		}
 	case "tls":
@@ -465,7 +482,18 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 		switch name {
 		case "ParseAuthorizedKey", "ParsePublicKey", "NewPublicKey", "ParsePrivateKey", "ParseRawPrivateKey", "ParsePrivateKeyWithPassphrase", "ParseRawPrivateKeyWithPassphrase", "NewSignerFromKey":
-			return keyOperation(name), true
+			c := keyOperation(name)
+			if api.path == "golang.org/x/crypto/ssh" && api.receiver == "" {
+				switch name {
+				case "ParseAuthorizedKey":
+					c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "OpenSSH"
+				case "ParsePublicKey":
+					c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "SSH"
+				case "ParsePrivateKey", "ParseRawPrivateKey", "ParsePrivateKeyWithPassphrase", "ParseRawPrivateKeyWithPassphrase":
+					c.CryptoProperties.RelatedCryptoMaterialProperties.Format = "PEM"
+				}
+			}
+			return c, true
 		case "Dial", "NewClientConn", "NewServerConn":
 			return protocol("SSH", cdx.CryptoProtocolTypeSSH), true
 		}

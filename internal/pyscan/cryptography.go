@@ -162,31 +162,39 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 	if strings.HasPrefix(short, "serialization.") {
 		method := strings.TrimPrefix(short, "serialization.")
 		kind := cdx.RelatedCryptoMaterialTypePrivateKey
+		format := ""
 		switch method {
-		case "load_pem_private_key", "load_der_private_key", "load_ssh_private_key":
-		case "load_pem_public_key", "load_der_public_key", "load_ssh_public_key":
-			kind = cdx.RelatedCryptoMaterialTypePublicKey
+		case "load_pem_private_key", "load_ssh_private_key":
+			format = "PEM"
+		case "load_der_private_key":
+			format = "DER"
+		case "load_pem_public_key":
+			kind, format = cdx.RelatedCryptoMaterialTypePublicKey, "PEM"
+		case "load_der_public_key":
+			kind, format = cdx.RelatedCryptoMaterialTypePublicKey, "DER"
+		case "load_ssh_public_key":
+			kind, format = cdx.RelatedCryptoMaterialTypePublicKey, "OpenSSH"
 		default:
 			return cdx.Component{}, false
 		}
 		return cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: "Key import",
 			CryptoProperties: &cdx.CryptoProperties{AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
-				RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: kind}}}, true
+				RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: kind, Format: format}}}, true
 	}
 	switch name {
-	case "cryptography.x509.load_pem_x509_certificate", "cryptography.x509.load_der_x509_certificate",
-		"cryptography.x509.load_pem_x509_csr", "cryptography.x509.load_der_x509_csr":
-		label := "X.509 certificate import"
-		if strings.HasSuffix(name, "_csr") {
-			label = "X.509 certificate request import"
+	case "cryptography.x509.load_pem_x509_certificate", "cryptography.x509.load_der_x509_certificate":
+		return inventory.ConfiguredCertificate("X.509 certificate import", "", nil), true
+	case "cryptography.x509.load_pem_x509_csr", "cryptography.x509.load_der_x509_csr":
+		format := "PEM"
+		if name == "cryptography.x509.load_der_x509_csr" {
+			format = "DER"
 		}
-		return inventory.ConfiguredCertificate(label, "", nil), true
+		return certificateRequest("X.509 certificate request import", format), true
 	case "cryptography.x509.CertificateBuilder.sign", "cryptography.x509.CertificateSigningRequestBuilder.sign":
-		label := "X.509 certificate signing"
-		if strings.Contains(name, "CertificateSigningRequestBuilder") {
-			label = "X.509 certificate request signing"
+		component := inventory.ConfiguredCertificate("X.509 certificate signing", "", nil)
+		if name == "cryptography.x509.CertificateSigningRequestBuilder.sign" {
+			component = certificateRequest("X.509 certificate request signing", "")
 		}
-		component := inventory.ConfiguredCertificate(label, "", nil)
 		hash := argument(call, 1, "algorithm")
 		if name := digest(hash); name != "" {
 			inventory.Property(&component, "signature.hash", name)
@@ -199,6 +207,12 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 		return algorithm("Fernet", cdx.CryptoPrimitiveCombiner, operation(strings.TrimPrefix(name, "cryptography.fernet.Fernet."))), true
 	}
 	return cdx.Component{}, false
+}
+
+func certificateRequest(name, format string) cdx.Component {
+	return cdx.Component{Type: cdx.ComponentTypeCryptographicAsset, Name: name,
+		CryptoProperties: &cdx.CryptoProperties{AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
+			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypeOther, Format: format}}}
 }
 
 func operation(method string) cdx.CryptoFunction {

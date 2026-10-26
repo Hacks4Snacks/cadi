@@ -33,6 +33,75 @@ func TestEachCBOMHasFreshDocumentIdentity(t *testing.T) {
 	}
 }
 
+func TestMaterialFormatsPreserveConsolidationAndProvenance(t *testing.T) {
+	for _, test := range []struct {
+		name, first, second, native string
+		detailed                    bool
+	}{
+		{"uniform", "PEM", "PEM", "PEM", false},
+		{"mixed", "PEM", "DER", "", true},
+		{"partially-known", "PEM", "", "", true},
+		{"unknown", "", "", "", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var result inventory.Result
+			for index, format := range []string{test.first, test.second} {
+				component := cdx.Component{BOMRef: "shared-key", Type: cdx.ComponentTypeCryptographicAsset, Name: "Public key",
+					CryptoProperties: &cdx.CryptoProperties{AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
+						RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypePublicKey, Format: format}}}
+				result.Add(component, inventory.Evidence{Kind: "present", Collector: "file", Location: []string{"first", "second"}[index]}, "")
+			}
+			before, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, full := range []bool{false, true} {
+				options := EncodeOptions{IncludeDependencies: full}
+				bom := encodeForTest(t, []inventory.Collection{{Result: result}}, options)
+				if len(*bom.Components) != 1 {
+					t.Fatal("representations of the same key were split into multiple assets")
+				}
+				component := (*bom.Components)[0]
+				if component.BOMRef != "shared-key" || component.CryptoProperties.RelatedCryptoMaterialProperties.Format != test.native {
+					t.Fatal("format depends on the first observation instead of agreement")
+				}
+				locations := map[string]string{}
+				for _, occurrence := range *component.Evidence.Occurrences {
+					locations[occurrence.BOMRef] = occurrence.Location
+				}
+				if len(locations) != 2 {
+					t.Fatal("source occurrences were lost")
+				}
+				formats := map[string]string{}
+				for _, property := range *component.Properties {
+					if property.Name != "ciphertrail:provenance" {
+						continue
+					}
+					var record struct{ Occurrence, MaterialFormat string }
+					if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+						t.Fatal(err)
+					}
+					formats[locations[record.Occurrence]] = record.MaterialFormat
+				}
+				if test.detailed && (len(formats) != 2 || formats["first"] != test.first || formats["second"] != test.second) ||
+					!test.detailed && len(formats) != 0 {
+					t.Fatalf("incorrect occurrence-specific format evidence: %v", formats)
+				}
+				reversed := result
+				reversed.Entries = []inventory.Entry{result.Entries[1], result.Entries[0]}
+				again := encodeForTest(t, []inventory.Collection{{Result: reversed}}, options)
+				if !reflect.DeepEqual(bom.Components, again.Components) {
+					t.Fatal("entry order changed the consolidated format or provenance")
+				}
+			}
+			after, err := json.Marshal(result)
+			if err != nil || string(before) != string(after) {
+				t.Fatal("format merging modified collector-owned component data")
+			}
+		})
+	}
+}
+
 func TestPrimarySubjectPreservesFactsAndGraph(t *testing.T) {
 	var result inventory.Result
 	root := result.Add(cdx.Component{Type: cdx.ComponentTypeLibrary, Name: "subject", Version: "2.3.4"},

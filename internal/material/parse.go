@@ -74,7 +74,7 @@ func Parse(data []byte, evidence inventory.Evidence, parent string) (inventory.R
 			if err != nil || len(bytes.TrimSpace(rest)) != 0 {
 				return result, true, fmt.Errorf("malformed SSH public key entry")
 			}
-			if _, err := AddSSHKey(&result, key, evidence, parent); err != nil {
+			if _, err := AddSSHKey(&result, key, evidence, parent, "OpenSSH"); err != nil {
 				return result, true, err
 			}
 		}
@@ -92,7 +92,7 @@ func Parse(data []byte, evidence inventory.Evidence, parent string) (inventory.R
 	}
 	for _, parse := range parsers {
 		if key, err := parse(data); err == nil {
-			_, err := AddKey(&result, key, evidence, parent)
+			_, err := AddKey(&result, key, evidence, parent, "DER")
 			return result, true, err
 		}
 	}
@@ -137,7 +137,7 @@ func parseBlock(result *inventory.Result, block *pem.Block, evidence inventory.E
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", block.Type, err)
 	}
-	_, err = AddKey(result, key, evidence, parent)
+	_, err = AddKey(result, key, evidence, parent, "PEM")
 	return err
 }
 
@@ -146,7 +146,7 @@ func encryptedKey(result *inventory.Result, evidence inventory.Evidence, parent 
 		Type: "cryptographic-asset", Name: "Encrypted private key",
 		CryptoProperties: &cdx.CryptoProperties{
 			AssetType:                       cdx.CryptoAssetTypeRelatedCryptoMaterial,
-			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypePrivateKey},
+			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypePrivateKey, Format: "PEM"},
 		},
 	}
 	evidence.Unresolved = append([]string{"key-algorithm", "key-size-bits"}, evidence.Unresolved...)

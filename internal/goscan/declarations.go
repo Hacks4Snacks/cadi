@@ -205,6 +205,8 @@ func certificateKeyConfiguration(result *inventory.Result, expression ast.Expr, 
 	key := keyOperation("cert-manager Private key configuration")
 	properties := key.CryptoProperties.RelatedCryptoMaterialProperties
 	algorithmName, _ := declarationText(values, fields["Algorithm"])
+	encoding, _ := declarationText(values, fields["Encoding"])
+	properties.Format = inventory.CertManagerKeyFormat(encoding)
 	if literal == nil && candidateLiteral == nil {
 		evidence.Unresolved = append(evidence.Unresolved, "cert-manager.private-key")
 	}

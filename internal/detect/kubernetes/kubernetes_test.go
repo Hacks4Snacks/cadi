@@ -50,6 +50,38 @@ func collectManifest(t *testing.T, data string) (inventory.Result, error) {
 	return result, err
 }
 
+func TestCertificateKeyEncodingFormats(t *testing.T) {
+	for _, test := range []struct{ encoding, format string }{
+		{"PKCS1", "PEM"}, {"PKCS8", "PEM"}, {"", ""}, {"unknown", ""}, {"{{ .Values.encoding }}", ""},
+	} {
+		t.Run(test.encoding, func(t *testing.T) {
+			document := certificateManifest
+			if test.encoding != "" {
+				document = strings.Replace(document, "    rotationPolicy: Always", "    encoding: '"+test.encoding+"'\n    rotationPolicy: Always", 1)
+			}
+			result, err := collectManifest(t, document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range result.Entries {
+				if entry.Component.Name == "cert-manager Private key configuration" {
+					found = true
+					if got := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties.Format; got != test.format {
+						t.Errorf("format=%q; want %q", got, test.format)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("configured key was lost")
+			}
+			if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestCertificateAndIngressDeclarationsRetainTypedProvenance(t *testing.T) {
 	result, err := collectManifest(t, "# Source: example/templates/certificate.yaml\n"+certificateManifest+`---
 apiVersion: networking.k8s.io/v1

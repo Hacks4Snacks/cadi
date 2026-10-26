@@ -68,7 +68,7 @@ func (p SSH) Collect(ctx context.Context) (inventory.Result, error) {
 	}
 	parent := result.Add(cdx.Component{Type: "application", Name: evidence.Location}, evidence, "")
 	result.Subjects = append(result.Subjects, parent)
-	keyRef, err := material.AddSSHKey(&result, key, evidence, parent)
+	keyRef, err := material.AddSSHKey(&result, key, evidence, parent, "SSH")
 	if err != nil {
 		return result, err
 	}

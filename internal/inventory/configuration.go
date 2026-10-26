@@ -80,6 +80,11 @@ func (r *Result) AddConfiguredPrivateKey(name, algorithmName string, size int, v
 			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{Type: cdx.RelatedCryptoMaterialTypePrivateKey},
 		}}
 	properties := key.CryptoProperties.RelatedCryptoMaterialProperties
+	for _, value := range values {
+		if value.Name == "cert-manager.key-encoding" {
+			properties.Format = CertManagerKeyFormat(value.Value)
+		}
+	}
 	if size > 0 && algorithmName != "Ed25519" {
 		properties.Size = &size
 	}
@@ -89,6 +94,17 @@ func (r *Result) AddConfiguredPrivateKey(name, algorithmName string, size int, v
 	}
 	attributes(&key, values)
 	return r.Add(key, evidence, parent)
+}
+
+// CertManagerKeyFormat records the PEM envelope promised by explicit supported
+// encodings; the original PKCS1/PKCS8 container selection remains a separate fact.
+func CertManagerKeyFormat(encoding string) string {
+	switch encoding {
+	case "PKCS1", "PKCS8":
+		return "PEM"
+	default:
+		return ""
+	}
 }
 
 // TLSConfiguration contains explicitly configured TLS references and cipher-suite names.

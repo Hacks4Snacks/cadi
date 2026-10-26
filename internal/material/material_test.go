@@ -53,12 +53,142 @@ func TestParseCertificateAndPrivateKeyWithoutSecrets(t *testing.T) {
 			}
 			if key := p.RelatedCryptoMaterialProperties; key != nil && key.Type == "private-key" {
 				privateKeyFound = key.Size != nil && *key.Size == 256 && key.Value == "" && key.AlgorithmRef == "" &&
-					key.RelatedCryptographicAssets != nil && len(*key.RelatedCryptographicAssets) == 1
+					key.RelatedCryptographicAssets != nil && len(*key.RelatedCryptographicAssets) == 1 && key.Format == "PEM"
+			}
+			if key := p.RelatedCryptoMaterialProperties; key != nil && key.Type == "public-key" && key.Format != "DER" {
+				t.Fatal("a certificate's embedded SPKI format was confused with the outer PEM envelope")
 			}
 		}
 	}
 	if !certificateFound || !privateKeyFound {
 		t.Fatal("missing certificate or key parameters")
+	}
+}
+
+func TestParsedKeyFormatsDoNotChangeKeyIdentity(t *testing.T) {
+	identity, cert, _, privatePEM := testutil.Identity(t)
+	privateDER, err := x509.MarshalPKCS8PrivateKey(identity.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER := cert.RawSubjectPublicKeyInfo
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})
+	signer, err := ssh.NewSignerFromKey(identity.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openSSH, err := ssh.MarshalPrivateKey(identity.PrivateKey, "PRIVATE_COMMENT_SENTINEL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := map[cdx.RelatedCryptoMaterialType]string{}
+	for _, test := range []struct {
+		name, format string
+		data         []byte
+		kind         cdx.RelatedCryptoMaterialType
+	}{
+		{"private-DER", "DER", privateDER, cdx.RelatedCryptoMaterialTypePrivateKey},
+		{"private-PEM", "PEM", privatePEM, cdx.RelatedCryptoMaterialTypePrivateKey},
+		{"OpenSSH-private-PEM", "PEM", pem.EncodeToMemory(openSSH), cdx.RelatedCryptoMaterialTypePrivateKey},
+		{"public-DER", "DER", publicDER, cdx.RelatedCryptoMaterialTypePublicKey},
+		{"public-PEM", "PEM", publicPEM, cdx.RelatedCryptoMaterialTypePublicKey},
+		{"authorized-key", "OpenSSH", ssh.MarshalAuthorizedKey(signer.PublicKey()), cdx.RelatedCryptoMaterialTypePublicKey},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, recognized, err := Parse(test.data, inventory.Evidence{Kind: "present", Collector: "file", Location: "opaque.data"}, "")
+			if err != nil || !recognized {
+				t.Fatalf("material parse failed: %v", err)
+			}
+			found := false
+			for _, entry := range result.Entries {
+				key := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties
+				if key == nil {
+					continue
+				}
+				found = true
+				if key.Format != test.format || key.Type != test.kind || key.Value != "" {
+					t.Fatalf("incorrect source encoding or private data exported: %+v", key)
+				}
+				if prior := refs[test.kind]; prior != "" && prior != entry.Component.BOMRef {
+					t.Fatal("format changes split the same mathematical key identity")
+				}
+				refs[test.kind] = entry.Component.BOMRef
+			}
+			if !found {
+				t.Fatal("parsed key missing")
+			}
+			data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+			if err != nil || bytes.Contains(data, []byte("PRIVATE_COMMENT_SENTINEL")) || bytes.Contains(data, privatePEM[35:75]) {
+				t.Fatalf("invalid output or private data leaked: %v", err)
+			}
+		})
+	}
+	var inMemory inventory.Result
+	ref, err := AddKey(&inMemory, cert.PublicKey, inventory.Evidence{Kind: "present"}, "", "")
+	if err != nil || ref != refs[cdx.RelatedCryptoMaterialTypePublicKey] {
+		t.Fatalf("in-memory key identity changed: %v", err)
+	}
+	if inMemory.Entries[len(inMemory.Entries)-1].Component.CryptoProperties.RelatedCryptoMaterialProperties.Format != "" {
+		t.Fatal("fingerprint normalization was mistaken for an observed encoding")
+	}
+}
+
+func TestSameKeyInPEMAndDERKeepsPerOccurrenceFormats(t *testing.T) {
+	identity, _, _, privatePEM := testutil.Identity(t)
+	privateDER, err := x509.MarshalPKCS8PrivateKey(identity.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result inventory.Result
+	for _, input := range []struct {
+		path string
+		data []byte
+	}{{"private.pem", privatePEM}, {"private.der", privateDER}} {
+		parsed, recognized, err := Parse(input.data, inventory.Evidence{Kind: "present", Collector: "file", Location: input.path}, "")
+		if err != nil || !recognized {
+			t.Fatalf("key was not parsed: %v", err)
+		}
+		result.Merge(parsed)
+	}
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	keys := 0
+	for _, component := range *bom.Components {
+		key := component.CryptoProperties.RelatedCryptoMaterialProperties
+		if key == nil {
+			continue
+		}
+		keys++
+		if key.Format != "" || key.Value != "" {
+			t.Fatal("consolidated key selected one format or exposed private material")
+		}
+		locations := map[string]string{}
+		for _, occurrence := range *component.Evidence.Occurrences {
+			locations[occurrence.BOMRef] = occurrence.Location
+		}
+		formats := map[string]string{}
+		for _, property := range *component.Properties {
+			if property.Name != "ciphertrail:provenance" {
+				continue
+			}
+			var record struct{ Occurrence, MaterialFormat string }
+			if err := json.Unmarshal([]byte(property.Value), &record); err != nil {
+				t.Fatal(err)
+			}
+			formats[locations[record.Occurrence]] = record.MaterialFormat
+		}
+		if formats["private.pem"] != "PEM" || formats["private.der"] != "DER" || len(formats) != 2 {
+			t.Fatalf("key representation provenance was lost: %v", formats)
+		}
+	}
+	if keys != 1 {
+		t.Fatalf("the same key was not consolidated: %d", keys)
 	}
 }
 
@@ -115,6 +245,9 @@ func TestEncryptedKeysRetainDistinctLocations(t *testing.T) {
 	for _, entry := range result.Entries {
 		if len(entry.Evidence.Unresolved) != 2 {
 			t.Fatal("unavailable encrypted-key parameters lost their unresolved summary")
+		}
+		if entry.Component.CryptoProperties.RelatedCryptoMaterialProperties.Format != "PEM" {
+			t.Fatal("known encrypted container envelope was discarded")
 		}
 	}
 	if len(result.Diagnostics) != 2 {

@@ -166,7 +166,8 @@ func TestSSHStopsBeforeAuthentication(t *testing.T) {
 	found := false
 	for _, entry := range result.Entries {
 		if p := entry.Component.CryptoProperties; p != nil && p.RelatedCryptoMaterialProperties != nil {
-			found = p.RelatedCryptoMaterialProperties.Type == "public-key" && entry.Evidence.Kind == "observed"
+			found = p.RelatedCryptoMaterialProperties.Type == "public-key" && entry.Evidence.Kind == "observed" &&
+				p.RelatedCryptoMaterialProperties.Format == "SSH"
 		}
 		if p := entry.Component.CryptoProperties; p != nil && p.ProtocolProperties != nil {
 			if p.ProtocolProperties.CryptoRefArray != nil || p.ProtocolProperties.RelatedCryptographicAssets == nil ||

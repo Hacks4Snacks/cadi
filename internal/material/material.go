@@ -20,8 +20,9 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// AddKey records public parameters and a fingerprint derived only from the public key.
-func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, parent string) (string, error) {
+// AddKey records public parameters, the known source format (empty when unknown),
+// and a fingerprint derived only from the public key.
+func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, parent, format string) (string, error) {
 	kind := cdx.RelatedCryptoMaterialTypePublicKey
 	switch private := key.(type) {
 	case crypto.Signer:
@@ -83,7 +84,7 @@ func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, pare
 		CryptoProperties: &cdx.CryptoProperties{
 			AssetType: cdx.CryptoAssetTypeRelatedCryptoMaterial,
 			RelatedCryptoMaterialProperties: &cdx.RelatedCryptoMaterialProperties{
-				Type: kind, ID: "sha256:" + fingerprint, Size: &bits,
+				Type: kind, ID: "sha256:" + fingerprint, Size: &bits, Format: format,
 				RelatedCryptographicAssets: &[]cdx.RelatedCryptographicAsset{{Type: "algorithm", Ref: algorithmRef}},
 			},
 		},
@@ -94,7 +95,11 @@ func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, pare
 
 // AddCertificate records certificate identity, validity dates, and public-key relationships.
 func AddCertificate(result *inventory.Result, certificate *x509.Certificate, evidence inventory.Evidence, parent string) (string, error) {
-	keyRef, err := AddKey(result, certificate.PublicKey, evidence, parent)
+	keyFormat := ""
+	if len(certificate.RawSubjectPublicKeyInfo) > 0 {
+		keyFormat = "DER"
+	}
+	keyRef, err := AddKey(result, certificate.PublicKey, evidence, parent, keyFormat)
 	if err != nil {
 		return "", err
 	}
@@ -160,10 +165,11 @@ func signatureAlgorithm(identity x509.SignatureAlgorithm) cdx.Component {
 }
 
 // AddSSHKey records host/authorized-key metadata without treating key format as a signature algorithm.
-func AddSSHKey(result *inventory.Result, key ssh.PublicKey, evidence inventory.Evidence, parent string) (string, error) {
+func AddSSHKey(result *inventory.Result, key ssh.PublicKey, evidence inventory.Evidence, parent, format string) (string, error) {
 	wireType := key.Type()
 	if certificate, ok := key.(*ssh.Certificate); ok {
 		key = certificate.Key
+		format = "SSH"
 		result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{
 			Location: evidence.Location, Message: "SSH certificate subject key inventoried; certificate extensions and signer are not analyzed",
 		})
@@ -172,7 +178,7 @@ func AddSSHKey(result *inventory.Result, key ssh.PublicKey, evidence inventory.E
 	if !ok {
 		return "", fmt.Errorf("unsupported SSH public key format %s", wireType)
 	}
-	ref, err := AddKey(result, public.CryptoPublicKey(), evidence, parent)
+	ref, err := AddKey(result, public.CryptoPublicKey(), evidence, parent, format)
 	if err != nil {
 		return "", err
 	}

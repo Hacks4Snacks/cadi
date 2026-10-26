@@ -1235,7 +1235,7 @@ func Build() cm.CertificateSpec { key := policy.CopyKey(); duration := policy.Co
 import ("time"; cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1")
 const bits = 256
 var Rotation = cm.RotationPolicyAlways
-var Key = &cm.CertificatePrivateKey{Algorithm:"ECDSA",Size:bits,RotationPolicy:Rotation}
+var Key = &cm.CertificatePrivateKey{Algorithm:"ECDSA",Size:bits,Encoding:"PKCS8",RotationPolicy:Rotation}
 var Duration = &cm.Duration{Duration:30*24*time.Hour}
 func CopyKey() cm.CertificatePrivateKey { return *Key }
 func CopyDuration() cm.Duration { return *Duration }
@@ -1268,11 +1268,12 @@ func CopyDuration() cm.Duration { return *Duration }
 		}
 		if entry.Component.Name == "cert-manager Private key configuration" {
 			key := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties
-			if key.Size != nil || key.RelatedCryptographicAssets == nil {
+			if key.Size != nil || key.Format != "" || key.RelatedCryptographicAssets == nil {
 				t.Fatal("mutable policy was treated as certain or its definition link was lost")
 			}
 			relation := (*key.RelatedCryptographicAssets)[0]
-			if relation.Type != "declaredPolicy" || components[relation.Ref].CryptoProperties.RelatedCryptoMaterialProperties.Size == nil {
+			if relation.Type != "declaredPolicy" || components[relation.Ref].CryptoProperties.RelatedCryptoMaterialProperties.Size == nil ||
+				components[relation.Ref].CryptoProperties.RelatedCryptoMaterialProperties.Format != "PEM" {
 				t.Fatal("declared policy was not linked to its typed definition")
 			}
 		}
@@ -1676,6 +1677,111 @@ func Run(private *rsa.PrivateKey, public ssh.PublicKey, a,b *x509.Certificate) {
 	if nonAssetAPI(apiIdentity{"crypto/rsa", "PrivateKey", "Validate"}) ||
 		nonAssetAPI(apiIdentity{"crypto/x509", "Certificate", "Verify"}) {
 		t.Fatal("validation or signature verification was suppressed as metadata")
+	}
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGoMaterialFormatsFollowExactAPIs(t *testing.T) {
+	source := `package example
+import ("crypto"; "crypto/ecdsa"; "crypto/rsa"; "crypto/x509"; "golang.org/x/crypto/ssh")
+func Run(raw []byte, r *rsa.PrivateKey, e *ecdsa.PrivateKey, key ssh.PublicKey, signer crypto.Signer) {
+`
+	tests := []struct{ code, format string }{
+		{"_, _ = x509.ParsePKCS1PrivateKey(raw)", "DER"},
+		{"_, _ = x509.ParsePKCS1PublicKey(raw)", "DER"},
+		{"_ = x509.MarshalPKCS1PrivateKey(r)", "DER"},
+		{"_ = x509.MarshalPKCS1PublicKey(&r.PublicKey)", "DER"},
+		{"_, _ = x509.ParsePKCS8PrivateKey(raw)", "DER"},
+		{"_, _ = x509.MarshalPKCS8PrivateKey(r)", "DER"},
+		{"_, _ = x509.ParsePKIXPublicKey(raw)", "DER"},
+		{"_, _ = x509.MarshalPKIXPublicKey(&r.PublicKey)", "DER"},
+		{"_, _ = x509.ParseECPrivateKey(raw)", "DER"},
+		{"_, _ = x509.MarshalECPrivateKey(e)", "DER"},
+		{"_, _ = x509.ParseCertificateRequest(raw)", "DER"},
+		{"_, _ = x509.CreateCertificateRequest(nil, nil, r)", "DER"},
+		{"_, _ = ssh.ParsePrivateKey(raw)", "PEM"},
+		{"_, _ = ssh.ParseRawPrivateKey(raw)", "PEM"},
+		{"_, _ = ssh.ParsePrivateKeyWithPassphrase(raw, []byte(\"PRIVATE_PASSWORD\"))", "PEM"},
+		{"_, _ = ssh.ParseRawPrivateKeyWithPassphrase(raw, []byte(\"PRIVATE_PASSWORD\"))", "PEM"},
+		{"_, _, _, _, _ = ssh.ParseAuthorizedKey(raw)", "OpenSSH"},
+		{"_ = ssh.MarshalAuthorizedKey(key)", "OpenSSH"},
+		{"_, _ = ssh.ParsePublicKey(raw)", "SSH"},
+		{"_ = key.Marshal()", "SSH"},
+		{"_ = ssh.PublicKey.Marshal(key)", "SSH"},
+		{"_, _ = ssh.NewPublicKey(&r.PublicKey)", ""},
+		{"_, _ = ssh.NewSignerFromKey(r)", ""},
+		{"_ = signer.Public()", ""},
+		{"_ = r.Validate()", ""},
+	}
+	firstLine := strings.Count(source, "\n") + 1
+	for _, test := range tests {
+		source += test.code + "\n"
+	}
+	source += "}\n"
+	result, err := (Source{Path: fixture(t, source), Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("supported APIs became coverage gaps: %+v", result.Diagnostics)
+	}
+	seen := map[int]bool{}
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties == nil {
+			continue
+		}
+		index := entry.Evidence.Line - firstLine
+		if index < 0 || index >= len(tests) {
+			t.Fatalf("unexpected material finding: %+v", entry.Evidence)
+		}
+		seen[index] = true
+		p := entry.Component.CryptoProperties
+		key := p.RelatedCryptoMaterialProperties
+		if p.AssetType != cdx.CryptoAssetTypeRelatedCryptoMaterial || key == nil || key.Format != tests[index].format {
+			t.Errorf("%s: wrong material format: %+v", tests[index].code, key)
+			continue
+		}
+		if key.Value != "" || key.Size != nil || p.AlgorithmProperties != nil || p.OID != "" || entry.Evidence.Kind != "configured" {
+			t.Error("format enrichment invented material, key parameters, or execution")
+		}
+	}
+	if len(seen) != len(tests) {
+		t.Errorf("found %d of %d expected material call sites", len(seen), len(tests))
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_PASSWORD") {
+			t.Fatalf("invalid format output or private argument leakage: %v", err)
+		}
+	}
+}
+
+func TestCertificateKeyFormatsRequireExplicitEncoding(t *testing.T) {
+	directory := certificateFixture(t, `package example
+import cm "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+var First = cm.CertificatePrivateKey{Encoding:"PKCS1"}
+var Second = cm.CertificatePrivateKey{Encoding:"PKCS8"}
+var Absent = cm.CertificatePrivateKey{}
+var Invalid = cm.CertificatePrivateKey{Encoding:"unknown"}
+func Dynamic(encoding string) cm.CertificatePrivateKey { return cm.CertificatePrivateKey{Encoding:encoding} }
+`)
+	result, err := (Source{Path: directory, Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	formats := map[int]string{}
+	for _, entry := range result.Entries {
+		if entry.Component.Name == "cert-manager Private key configuration" {
+			formats[entry.Evidence.Line] = entry.Component.CryptoProperties.RelatedCryptoMaterialProperties.Format
+		}
+	}
+	for line, want := range map[int]string{3: "PEM", 4: "PEM", 5: "", 6: "", 7: ""} {
+		got, exists := formats[line]
+		if !exists || got != want {
+			t.Errorf("line %d: format=%q; want %q", line, got, want)
+		}
 	}
 	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
 		t.Fatal(err)

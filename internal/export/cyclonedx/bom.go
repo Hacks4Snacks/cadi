@@ -17,13 +17,14 @@ import (
 func decimal(value int) string { return strconv.Itoa(value) }
 
 type provenance struct {
-	Occurrence string                   `json:"occurrence,omitempty"`
-	Kind       string                   `json:"kind,omitempty"`
-	Collector  string                   `json:"collector,omitempty"`
-	Time       string                   `json:"time,omitempty"`
-	Symbol     string                   `json:"symbol,omitempty"`
-	Context    *inventory.SourceContext `json:"context,omitempty"`
-	Parameters []parameterGroup         `json:"parameters,omitempty"`
+	Occurrence     string                   `json:"occurrence,omitempty"`
+	Kind           string                   `json:"kind,omitempty"`
+	Collector      string                   `json:"collector,omitempty"`
+	Time           string                   `json:"time,omitempty"`
+	Symbol         string                   `json:"symbol,omitempty"`
+	Context        *inventory.SourceContext `json:"context,omitempty"`
+	MaterialFormat string                   `json:"materialFormat,omitempty"`
+	Parameters     []parameterGroup         `json:"parameters,omitempty"`
 }
 
 type parameterGroup struct {
@@ -95,6 +96,12 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 					properties := slices.Clone(*copy.Properties)
 					copy.Properties = &properties
 				}
+				if copy.CryptoProperties != nil && copy.CryptoProperties.RelatedCryptoMaterialProperties != nil {
+					crypto := *copy.CryptoProperties
+					material := *crypto.RelatedCryptoMaterialProperties
+					crypto.RelatedCryptoMaterialProperties = &material
+					copy.CryptoProperties = &crypto
+				}
 				copy.Evidence = &cdx.Evidence{Occurrences: &[]cdx.EvidenceOccurrence{}}
 				components[ref] = &copy
 				component = &copy
@@ -107,6 +114,9 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 			record, err := appendProvenance(component, entry.Evidence)
 			if err != nil {
 				return nil, err
+			}
+			if p := entry.Component.CryptoProperties; p != nil && p.RelatedCryptoMaterialProperties != nil {
+				record.MaterialFormat = p.RelatedCryptoMaterialProperties.Format
 			}
 			provenances[ref] = append(provenances[ref], record)
 			if edges[ref] == nil {
@@ -125,6 +135,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 		if component.CryptoProperties != nil && component.Type != cdx.ComponentTypeCryptographicAsset {
 			return nil, fmt.Errorf("component %q has crypto properties but is not a cryptographic asset", component.Name)
 		}
+		mergeMaterialFormats(component, provenances[ref])
 		if err := appendEvidenceProperties(component, provenances[ref]); err != nil {
 			return nil, err
 		}
@@ -420,7 +431,25 @@ func appendProvenance(component *cdx.Component, evidence inventory.Evidence) (pr
 }
 
 func (p provenance) detailed() bool {
-	return p.Time != "" || p.Symbol != "" || p.Context != nil || len(p.Parameters) != 0
+	return p.Time != "" || p.Symbol != "" || p.Context != nil || p.MaterialFormat != "" || len(p.Parameters) != 0
+}
+
+func mergeMaterialFormats(component *cdx.Component, records []provenance) {
+	p := component.CryptoProperties
+	if p == nil || p.RelatedCryptoMaterialProperties == nil || len(records) == 0 {
+		return
+	}
+	format := records[0].MaterialFormat
+	for _, record := range records[1:] {
+		if record.MaterialFormat != format {
+			p.RelatedCryptoMaterialProperties.Format = ""
+			return
+		}
+	}
+	p.RelatedCryptoMaterialProperties.Format = format
+	for index := range records {
+		records[index].MaterialFormat = ""
+	}
 }
 
 func sourceLocatorContext(source *inventory.SourceContext) *inventory.SourceContext {

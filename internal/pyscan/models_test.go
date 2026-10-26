@@ -322,6 +322,7 @@ x509.load_pem_x509_certificate(b"PRIVATE_CERTIFICATE")
 			t.Fatal("certificate signing hash was lost through the builder chain")
 		}
 	}
+
 	for _, name := range []string{"X.509 certificate signing", "X.509 certificate request signing", "Key import", "X.509 certificate import"} {
 		if !names[name] {
 			t.Errorf("missing %s", name)
@@ -330,5 +331,61 @@ x509.load_pem_x509_certificate(b"PRIVATE_CERTIFICATE")
 	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
 	if err != nil || strings.Contains(string(data), "PRIVATE_") {
 		t.Fatalf("certificate/key handling exposed material or failed schema: %v", err)
+	}
+}
+
+func TestPythonNativeMaterialFormats(t *testing.T) {
+	source := "from cryptography.hazmat.primitives import serialization\nfrom cryptography import x509\n"
+	tests := []struct {
+		code, format string
+		kind         cdx.RelatedCryptoMaterialType
+	}{
+		{"serialization.load_pem_private_key(b'PRIVATE_DATA', None)", "PEM", cdx.RelatedCryptoMaterialTypePrivateKey},
+		{"serialization.load_der_private_key(b'PRIVATE_DATA', None)", "DER", cdx.RelatedCryptoMaterialTypePrivateKey},
+		{"serialization.load_ssh_private_key(b'PRIVATE_DATA', None)", "PEM", cdx.RelatedCryptoMaterialTypePrivateKey},
+		{"serialization.load_pem_public_key(b'PRIVATE_DATA')", "PEM", cdx.RelatedCryptoMaterialTypePublicKey},
+		{"serialization.load_der_public_key(b'PRIVATE_DATA')", "DER", cdx.RelatedCryptoMaterialTypePublicKey},
+		{"serialization.load_ssh_public_key(b'PRIVATE_DATA')", "OpenSSH", cdx.RelatedCryptoMaterialTypePublicKey},
+		{"x509.load_pem_x509_csr(b'PRIVATE_DATA')", "PEM", cdx.RelatedCryptoMaterialTypeOther},
+		{"x509.load_der_x509_csr(b'PRIVATE_DATA')", "DER", cdx.RelatedCryptoMaterialTypeOther},
+		{"x509.CertificateSigningRequestBuilder().sign(private_key, None)", "", cdx.RelatedCryptoMaterialTypeOther},
+	}
+	for _, test := range tests {
+		source += test.code + "\n"
+	}
+	result, err := (Source{Selection: fixture(t, map[string]string{"app.py": source})}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("supported Python APIs became gaps: %+v", result.Diagnostics)
+	}
+	count := 0
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties == nil {
+			continue
+		}
+		count++
+		index := entry.Evidence.Line - 3
+		if index < 0 || index >= len(tests) {
+			t.Fatalf("unexpected material finding at line %d", entry.Evidence.Line)
+		}
+		p := entry.Component.CryptoProperties
+		m := p.RelatedCryptoMaterialProperties
+		if p.AssetType != cdx.CryptoAssetTypeRelatedCryptoMaterial || m == nil || m.Type != tests[index].kind || m.Format != tests[index].format {
+			t.Errorf("%s: incorrect kind/format: %+v", tests[index].code, p)
+		}
+		if m != nil && (m.Value != "" || m.Size != nil) || p.OID != "" || p.AlgorithmProperties != nil {
+			t.Error("format recognition invented raw material or algorithm parameters")
+		}
+	}
+	if count != len(tests) {
+		t.Errorf("material findings=%d; want %d", count, len(tests))
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_DATA") {
+			t.Fatalf("invalid or unsafe Python format output: %v", err)
+		}
 	}
 }
