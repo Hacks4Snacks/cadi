@@ -1,0 +1,2 @@
+# Test-only helper source; _test.go and testdata are excluded automatically.
+internal/testutil/

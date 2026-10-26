@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Go checks (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.15"
+          - os: macos-latest
+            python: "3.15"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Verify dependencies
+        run: go mod verify
+      - name: Vet and race tests
+        run: make check
+      - name: Verify build identity
+        run: |
+          make build VERSION=v0.0.0-ci
+          test "$(./bin/cadi version)" = "cadi v0.0.0-ci"
+      - name: Verify release packaging
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.10'
+        run: |
+          make release VERSION=v0.0.0
+          test "$(wc -l < dist/SHA256SUMS)" -eq 6
+          (cd dist && shasum -a 256 -c SHA256SUMS)
