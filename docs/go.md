@@ -204,6 +204,16 @@ repeat CLI tags in `GOFLAGS`. Isolated-manifest flags are preserved throughout.
 Standalone modules use isolated alternate `go.mod`/`go.sum` files for dependency
 preparation. Workspaces use an isolated `go.work`/`go.work.sum` and read-only
 manifest overlays; package-aware preparation honors local workspace members.
+Workspace membership is checked per selected module, including normalized
+absolute paths and symlink aliases. A discovered module not listed in the
+workspace's `use` directives is analyzed independently with `GOWORK=off` in its
+isolated subprocess, even when it sits beneath a listed module. Members continue
+to use the workspace and its local-module resolution; the scanner neither edits
+`go.work` to add omitted modules nor disables the workspace globally.
+The scan report's per-module `module-context` details record the relative module
+path and whether workspace mode was used. This selection happens before package
+loading, not as a fallback that could hide genuine compilation errors.
+
 Preparation does not run `go mod download all`, which can request unused
 transitive versions and placeholders unrelated to the selected packages.
 Local replacements continue to resolve against their original directories.

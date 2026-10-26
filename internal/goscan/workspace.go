@@ -31,13 +31,30 @@ func isolatedWorkspace(ctx context.Context, directory string, env []string) ([]s
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse Go workspace: %w", err)
 	}
+	moduleDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve Go module directory: %w", err)
+	}
+	member := false
 	var uses []*modfile.Use
 	for _, use := range work.Use {
 		usePath := use.Path
 		if !filepath.IsAbs(usePath) {
 			usePath = filepath.Join(filepath.Dir(path), usePath)
 		}
+		resolved, err := filepath.EvalSymlinks(usePath)
+		if err == nil {
+			usePath = resolved
+		} else if !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("resolve Go workspace member: %w", err)
+		}
+		member = member || filepath.Clean(usePath) == moduleDirectory
 		uses = append(uses, &modfile.Use{Path: usePath, ModulePath: use.ModulePath})
+	}
+	// Discovery can select independent modules omitted from an enclosing
+	// workspace. A nested module is not a member merely because its parent is.
+	if !member {
+		return setEnv(env, "GOWORK", "off"), func() error { return nil }, nil
 	}
 	work.SetUse(uses)
 	for _, replacement := range work.Replace {

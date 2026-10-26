@@ -149,6 +149,10 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 	if err != nil {
 		return result, err
 	}
+	result.Metadata("module-context", struct {
+		Module    string `json:"module"`
+		Workspace bool   `json:"workspace"`
+	}{Module: relative(root, directory), Workspace: files.workspace})
 	defer func() {
 		if err := files.cleanup(); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("clean isolated manifests: %w", err))

@@ -360,6 +360,147 @@ func Run() { nested.Run() }
 	}
 }
 
+func TestDiscoveredModulesOutsideWorkspaceUseOwnManifests(t *testing.T) {
+	for _, standalone := range []string{"standalone", "member/standalone"} {
+		t.Run(standalone, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("GOWORK", "")
+			t.Setenv("GOFLAGS", "")
+			files := map[string]string{
+				"go.work":               "go 1.27.0\nuse (\n./member\n./helper\n)\n",
+				"member/go.mod":         "module example.test/member\n\ngo 1.27.0\n",
+				"member/main.go":        "package member\nimport \"example.test/helper\"\nfunc Run() { helper.Run() }\n",
+				"helper/go.mod":         "module example.test/helper\n\ngo 1.27.0\n",
+				"helper/helper.go":      "package helper\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n",
+				standalone + "/go.mod":  "module example.test/standalone\n\ngo 1.27.0\n",
+				standalone + "/hash.go": "package standalone\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n",
+			}
+			for name, content := range files {
+				path := filepath.Join(root, name)
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, explicitWorkspace := range []bool{false, true} {
+				if explicitWorkspace {
+					t.Setenv("GOWORK", filepath.Join(root, "go.work"))
+				}
+				for _, target := range []string{root, filepath.Join(root, standalone)} {
+					result, err := (Source{Path: target, Offline: true}).Collect(context.Background())
+					if err != nil {
+						t.Fatalf("independent module inherited an unrelated workspace (explicit=%v): %v", explicitWorkspace, err)
+					}
+					hashes := map[string]int{}
+					for _, entry := range result.Entries {
+						if entry.Component.CryptoProperties != nil {
+							hashes[entry.Component.Name]++
+						}
+					}
+					if hashes["SHA-512"] != 1 || target == root && hashes["SHA-256"] != 1 {
+						t.Fatalf("standalone or workspace evidence missing: %v", hashes)
+					}
+					contexts := map[string]bool{}
+					for _, detail := range result.Details {
+						if detail.Name != "module-context" {
+							continue
+						}
+						var context struct {
+							Module    string
+							Workspace bool
+						}
+						if err := json.Unmarshal(detail.Value, &context); err != nil {
+							t.Fatal(err)
+						}
+						contexts[context.Module] = context.Workspace
+					}
+					if target == root {
+						workspace, exists := contexts[standalone]
+						if !exists || workspace || !contexts["member"] || !contexts["helper"] {
+							t.Fatalf("per-module workspace selection was not recorded correctly: %v", contexts)
+						}
+					} else if workspace, exists := contexts["."]; !exists || workspace {
+						t.Fatalf("standalone target was not marked as such: %v", contexts)
+					}
+					if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for name, before := range files {
+				after, err := os.ReadFile(filepath.Join(root, name))
+				if err != nil || string(after) != before {
+					t.Fatalf("workspace selection modified target input: %s", name)
+				}
+			}
+			for _, name := range []string{"go.work.sum", "member/go.sum", "helper/go.sum", standalone + "/go.sum"} {
+				if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+					t.Fatalf("workspace selection created a target checksum file: %s", name)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(root, "member", "main.go"), []byte("package member\nfunc Run() { undefined() }\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			partial, err := (Source{Path: root, Offline: true}).Collect(context.Background())
+			if err == nil {
+				t.Fatal("workspace selection hid a genuine member type error")
+			}
+			found := false
+			for _, entry := range partial.Entries {
+				found = found || entry.Component.Name == "SHA-512"
+			}
+			if !found {
+				t.Fatal("a failed workspace member discarded valid standalone evidence")
+			}
+		})
+	}
+}
+
+func TestWorkspaceMembershipResolvesAbsolutePathsAndSymlinks(t *testing.T) {
+	root := t.TempDir()
+	member := filepath.Join(root, "member")
+	if err := os.Mkdir(member, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "go.mod"), []byte("module example.test/member\n\ngo 1.27.0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "hash.go"), []byte("package member\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "alias")
+	if err := os.Symlink(member, link); err != nil {
+		t.Fatal(err)
+	}
+	workPath := filepath.Join(root, "go.work")
+	content := "go 1.27.0\nuse " + fmt.Sprintf("%q", link) + "\n"
+	if err := os.WriteFile(workPath, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOWORK", workPath)
+	env, cleanup, err := isolatedWorkspace(context.Background(), member, (Source{}).environment(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Error(err)
+		}
+	})
+	if got := envValue(env, "GOWORK"); got == "" || got == "off" || got == workPath {
+		t.Fatalf("a real workspace member was detached or not isolated: %q", got)
+	}
+	if _, err := (Source{Path: member, Offline: true}).Collect(context.Background()); err != nil {
+		t.Fatalf("workspace path alias prevented analysis: %v", err)
+	}
+	after, err := os.ReadFile(workPath)
+	if err != nil || string(after) != content {
+		t.Fatal("workspace alias normalization modified the original")
+	}
+}
+
 func TestOfflineLoadErrorsAreGroupedWithDetailedMetadata(t *testing.T) {
 	var problems []loadProblem
 	for _, path := range []string{"k8s.io/api/core/v1", "k8s.io/api/apps/v1", "k8s.io/client-go/rest"} {
