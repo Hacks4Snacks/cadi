@@ -174,15 +174,10 @@ segments; `internal/testutil` does not exclude `internal/testutilities` or
 Glob patterns, negation, absolute paths, and parent traversal are rejected rather
 than silently misinterpreted.
 
-The legacy `.ciphertrailignore` remains accepted during the
-[project-name transition](development.md#transition-from-ciphertrail). If both
-files exist, their rules are combined with CLI exclusions; neither overrides the
-other.
-
 Only ignore files at each explicit directory root are read; parent and nested
 ignore files are not inherited. Explicit files outside a selected directory use
 their containing directory as the scope root. Each ignore file must be regular,
-not a symlink, and no larger than 64 KiB. Both names are protected from output
+not a symlink, and no larger than 64 KiB. `.cadiignore` is protected from output
 overwrites. `.gitignore` is not implicitly treated as cryptographic scope.
 
 Excluded packages and nested modules are removed from the scan roots.

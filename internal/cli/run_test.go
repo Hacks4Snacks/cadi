@@ -287,29 +287,28 @@ func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 }
 
 func TestOutputCannotCreateOrOverwriteSourceIgnoreFile(t *testing.T) {
-	for _, name := range []string{".cadiignore", ".ciphertrailignore"} {
-		for _, flag := range []string{"--output", "--scan-report"} {
-			for _, exists := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%s/%s/exists=%v", name, flag, exists), func(t *testing.T) {
-					directory := t.TempDir()
-					path := filepath.Join(directory, name)
-					if exists {
-						writeRepositoryFile(t, directory, name, "excluded/\n")
+	const name = ".cadiignore"
+	for _, flag := range []string{"--output", "--scan-report"} {
+		for _, exists := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/%s/exists=%v", name, flag, exists), func(t *testing.T) {
+				directory := t.TempDir()
+				path := filepath.Join(directory, name)
+				if exists {
+					writeRepositoryFile(t, directory, name, "excluded/\n")
+				}
+				var stdout, stderr bytes.Buffer
+				code := Run(context.Background(), []string{"scan", directory, flag, path}, &stdout, &stderr)
+				if code != 1 || !strings.Contains(stderr.String(), "overwrite a scan input") {
+					t.Fatalf("ignore file was not protected: exit=%d stderr=%s", code, stderr.String())
+				}
+				if exists {
+					if data, err := os.ReadFile(path); err != nil || string(data) != "excluded/\n" {
+						t.Fatal("output changed a source configuration file")
 					}
-					var stdout, stderr bytes.Buffer
-					code := Run(context.Background(), []string{"scan", directory, flag, path}, &stdout, &stderr)
-					if code != 1 || !strings.Contains(stderr.String(), "overwrite a scan input") {
-						t.Fatalf("ignore file was not protected: exit=%d stderr=%s", code, stderr.String())
-					}
-					if exists {
-						if data, err := os.ReadFile(path); err != nil || string(data) != "excluded/\n" {
-							t.Fatal("output changed a source configuration file")
-						}
-					} else if _, err := os.Stat(path); !os.IsNotExist(err) {
-						t.Fatal("output created a source configuration file")
-					}
-				})
-			}
+				} else if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatal("output created a source configuration file")
+				}
+			})
 		}
 	}
 }

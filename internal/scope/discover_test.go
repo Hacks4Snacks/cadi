@@ -17,11 +17,11 @@ func TestScanReportsAndAllOutputsAreExcluded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, data := range map[string]string{
-		"source.py":          "value = 1\n",
-		"history.json":       `{"reportFormat":"` + inventory.ScanReportFormat + `","reportVersion":1,"tool":{"name":"cadi"}}`,
-		"legacy-report.json": `{"reportFormat":"CipherTrailScanReport","reportVersion":1,"tool":{"name":"ciphertrail"}}`,
-		"cbom.out":           "unrelated output bytes",
-		"scan.out":           "unrelated output bytes",
+		"source.py":         "value = 1\n",
+		"history.json":      `{"reportFormat":"` + inventory.ScanReportFormat + `","reportVersion":1,"tool":{"name":"cadi"}}`,
+		"other-report.json": `{"reportFormat":"OtherScanReport","reportVersion":1,"tool":{"name":"other"}}`,
+		"cbom.out":          "unrelated output bytes",
+		"scan.out":          "unrelated output bytes",
 	} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0600); err != nil {
 			t.Fatal(err)
@@ -33,62 +33,52 @@ func TestScanReportsAndAllOutputsAreExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(selection.Files) != 1 || selection.Files[0].Location != "source.py" {
-		t.Fatalf("reports or output destinations were selected as inputs: %+v", selection.Files)
+	var locations []string
+	for _, file := range selection.Files {
+		locations = append(locations, file.Location)
+	}
+	slices.Sort(locations)
+	if !slices.Equal(locations, []string{"other-report.json", "source.py"}) {
+		t.Fatalf("CADI reports or output destinations were selected, or unrelated input was excluded: %+v", selection.Files)
 	}
 }
 
-func TestCurrentAndLegacyIgnoreFilesAreCombined(t *testing.T) {
-	for _, names := range [][]string{{".cadiignore"}, {".ciphertrailignore"}, {".cadiignore", ".ciphertrailignore"}} {
-		t.Run(strings.Join(names, "+"), func(t *testing.T) {
-			root := t.TempDir()
-			want := []string{"cli", "shared"}
-			for index, name := range names {
-				entry := "current"
-				if index > 0 {
-					entry = "legacy"
-				}
-				if err := os.WriteFile(filepath.Join(root, name), []byte(entry+"/\nshared/\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-				want = append(want, entry)
-			}
-			slices.Sort(want)
-			got, err := LoadExclusions(root, []string{"cli", "shared"})
-			if err != nil || !slices.Equal(got, want) {
-				t.Fatalf("ignore migration changed scope: got=%v want=%v err=%v", got, want, err)
-			}
-		})
+func TestIgnoreFileAndCLIExclusionsAreCombined(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".cadiignore"), []byte("from-file/\nshared/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cli", "from-file", "shared"}
+	got, err := LoadExclusions(root, []string{"cli", "shared"})
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("incorrect combined exclusions: got=%v want=%v err=%v", got, want, err)
 	}
 }
 
-func TestLegacyIgnoreFileFailuresRemainExplicit(t *testing.T) {
+func TestIgnoreFileFailuresRemainExplicit(t *testing.T) {
 	for _, scenario := range []string{"invalid-rule", "oversized", "symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, ".cadiignore"), []byte("current/\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			legacy := filepath.Join(root, ".ciphertrailignore")
+			ignore := filepath.Join(root, ".cadiignore")
 			var err error
 			switch scenario {
 			case "invalid-rule":
-				err = os.WriteFile(legacy, []byte("../outside\n"), 0600)
+				err = os.WriteFile(ignore, []byte("../outside\n"), 0600)
 			case "oversized":
-				err = os.WriteFile(legacy, []byte(strings.Repeat("x", (64<<10)+1)), 0600)
+				err = os.WriteFile(ignore, []byte(strings.Repeat("x", (64<<10)+1)), 0600)
 			case "symlink":
 				target := filepath.Join(t.TempDir(), "target")
 				if err := os.WriteFile(target, []byte("PRIVATE_SENTINEL"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				err = os.Symlink(target, legacy)
+				err = os.Symlink(target, ignore)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := LoadExclusions(root, nil); err == nil ||
-				!strings.Contains(err.Error(), ".ciphertrailignore") || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
-				t.Fatalf("legacy ignore file was silently bypassed or read unsafely: %v", err)
+				!strings.Contains(err.Error(), ".cadiignore") || strings.Contains(err.Error(), "PRIVATE_SENTINEL") {
+				t.Fatalf("ignore file was silently bypassed or read unsafely: %v", err)
 			}
 		})
 	}

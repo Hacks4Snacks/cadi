@@ -235,6 +235,10 @@ The scan report's per-module `module-context` details record the relative module
 path and whether workspace mode was used. This selection happens before package
 loading, not as a fallback that could hide genuine compilation errors.
 
+A workspace's `go` directive must be at least as new as those in all member
+`go.mod` files. CADI reports an older workspace directive separately from an
+insufficient local toolchain; fix the workspace through its normal Go workflow.
+
 Preparation does not run `go mod download all`, which can request unused
 transitive versions and placeholders unrelated to the selected packages.
 Local replacements continue to resolve against their original directories.

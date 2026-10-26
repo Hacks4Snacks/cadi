@@ -70,9 +70,7 @@ func (o Options) prepare(ctx context.Context, outputs []string, selected []strin
 			selection.Target = path
 		}
 		if selection.Root != "" {
-			plan.Inputs = append(plan.Inputs,
-				filepath.Join(selection.Root, scope.IgnoreFileName),
-				filepath.Join(selection.Root, scope.LegacyIgnoreFileName))
+			plan.Inputs = append(plan.Inputs, filepath.Join(selection.Root, scope.IgnoreFileName))
 		}
 		targets = append(targets, &target{selection: selection, err: err})
 	}

@@ -2,43 +2,33 @@
 
 [Home](../README.md) | [Build and scan](scanning.md) | [Output contract](output.md)
 
-## Transition from CipherTrail
+## Project identity
 
-The project is now **Cryptographic Asset Discovery and Inventory (CADI)**.
+The project is **Cryptographic Asset Discovery and Inventory (CADI)**.
 The executable and local Go module are named `cadi`.
 
-| Surface | Previous name | Current name |
-|---|---|---|
-| Command / build output | `ciphertrail` / `bin/ciphertrail` | `cadi` / `bin/cadi` |
-| Entry point / local module | `cmd/ciphertrail` / `ciphertrail` | `cmd/cadi` / `cadi` |
-| Repository exclusions | `.ciphertrailignore` | `.cadiignore` |
-| CBOM/report generator | `ciphertrail` | `cadi` |
-| Custom properties | `ciphertrail:*` | `cadi:*` |
-| Component and occurrence references | `urn:ciphertrail:*` | `urn:cadi:*` |
-| Execution report format | `CipherTrailScanReport` | `CADIScanReport` |
+| Surface | Identifier |
+|---|---|
+| Command / build output | `cadi` / `bin/cadi` |
+| Entry point / local module | `cmd/cadi` / `cadi` |
+| Repository exclusions | `.cadiignore` |
+| CBOM/report generator | `cadi` |
+| Custom properties | `cadi:*` |
+| Component and occurrence references | `ref-<sha256>` |
+| Execution report format | `CADIScanReport` |
 
-All newly generated output uses CADI identifiers. CycloneDX remains version 1.7,
-execution reports retain `reportVersion: 1`, and document UUIDs/BOM-Links keep
-their standard formats. Changing the reference namespace and property names
-changes generated component/occurrence IDs; consumers must not assume ID equality
-across the rename. Asset consolidation, evidence semantics, and scanner limits
-are unchanged.
+Output uses CADI for tool identity and custom properties, with tool-neutral
+component/occurrence references. CBOMs use CycloneDX 1.7, execution reports use
+`reportVersion: 1`, and document UUIDs/BOM-Links use their standard formats.
 
-For migration, `.ciphertrailignore` remains supported. When both ignore files
-exist, their rules and CLI exclusions are combined, not overridden. Both files
-retain the same validation and output-overwrite protection. Rename your existing
-ignore file to `.cadiignore` when convenient.
+The `.cadiignore` rules and CLI exclusions are combined. The ignore file is
+validated and protected from output overwrites. Existing output can be replaced
+only when it identifies CADI as its generator; scan reports must also use the
+supported format and version. Unrelated files, symlinks, and input/output
+collisions remain protected.
 
-Previously generated CipherTrail CBOMs and scan reports remain recognizable for
-discovery exclusions and safe replacement of explicitly selected output files.
-They are not rewritten merely by scanning their directory. Unknown generators,
-unrelated files, symlinks, and input/output collisions remain protected.
-
-Update scripts to invoke `cadi`; there is no new `ciphertrail` command alias.
 Release archives use names such as `cadi_v0.1.0_linux_amd64.tar.gz`, containing
-`cadi` (`cadi.exe` on Windows). The checkout directory can keep its existing name.
-Repository hosting, remotes, existing generated reports, and installed old
-binaries are not renamed automatically.
+`cadi` (`cadi.exe` on Windows).
 
 ## Build identity
 
@@ -72,6 +62,10 @@ privacy, detector registration, input parity, output safeguards, and official
 schema validation. A bounded manifest fuzz target also checks that malformed
 inputs retain schema-valid partial inventories.
 
+Go workspace tests that use the shared module fixture inherit the repository's
+`go.mod`. Their `go.work` version must follow that manifest rather than a
+hardcoded version, so Go version updates do not invalidate the test workspace.
+
 ## Release automation
 
 The [release workflow](../.github/workflows/release-please.yml) runs on branch
@@ -86,32 +80,6 @@ for Action updates weekly.
 Only pushes to the repository's configured default branch manage releases.
 The branch name and repository owner are not hard-coded.
 
-### Before enabling publication
-
-1. Create/connect the GitHub repository and choose its default branch. This
-   checkout initially has no remote; no hosted settings are changed by these
-   files.
-2. Choose and add a project `LICENSE` before public distribution. The existing
-   CycloneDX schema license applies to those upstream files, not to CADI
-   as a whole. Review dependency license/notice obligations and ensure generated
-   scan reports and local operational data are not accidentally committed.
-3. Enable Actions and **Settings > Actions > General > Allow GitHub Actions to
-   create and approve pull requests**, subject to organization policy.
-4. Recommended: add a repository secret named `RELEASE_PLEASE_TOKEN` containing
-   a fine-grained PAT limited to this repository, with **Contents**, **Issues**,
-   and **Pull requests** read/write permissions. A suitable GitHub App
-   installation token can also be supplied, but must be refreshed by your own
-   token-minting automation rather than stored as a long-lived secret.
-5. Enable squash merging and use Conventional Commit PR titles. Require the CI
-   `Go checks` matrix checks in branch protection or a ruleset before merging.
-   These workflows do not enable auto-merge or bypass reviews.
-
-Without `RELEASE_PLEASE_TOKEN`, release-please uses `GITHUB_TOKEN`. That can
-create release PRs and releases, but its PR events do not trigger CI. If required
-checks are enabled, manually run the **CI** workflow against the release PR
-branch, or configure the dedicated token. Asset publication runs in the same
-workflow as release-please, so it does not depend on a token-generated tag or
-release event triggering another workflow.
 
 ### Versioning and normal releases
 

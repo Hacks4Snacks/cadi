@@ -117,11 +117,11 @@ func prepareOutput(path string, inputs []string, kind outputKind) (*outputTarget
 		case outputCBOM:
 			if header.BOMFormat == "CycloneDX" {
 				for _, tool := range header.Metadata.Tools.Components {
-					ours = ours || inventory.IsToolName(tool.Name)
+					ours = ours || tool.Name == inventory.ToolName
 				}
 			}
 		case outputScanReport:
-			ours = inventory.IsScanReportFormat(header.ReportFormat) && header.ReportVersion == 1 && inventory.IsToolName(header.Tool.Name)
+			ours = header.ReportFormat == inventory.ScanReportFormat && header.ReportVersion == 1 && header.Tool.Name == inventory.ToolName
 		}
 		if !ours {
 			return nil, fmt.Errorf("existing output is not a CADI %s; choose a new path", kind.label())

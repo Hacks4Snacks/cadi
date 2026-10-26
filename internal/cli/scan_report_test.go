@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -319,16 +320,16 @@ func TestRenderedInputGapsRemainVisibleAlongsideFindings(t *testing.T) {
 	t.Fatal("Kubernetes coverage missing from scan report")
 }
 
-func TestLegacyOutputsAreSafelyReplacedWithCADIReports(t *testing.T) {
+func TestExistingOutputsAreSafelyReplaced(t *testing.T) {
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "certificate.yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: identity}\nspec: {}\n")
-	writeRepositoryFile(t, root, "cbom.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"ciphertrail"}]}}}`)
-	writeRepositoryFile(t, root, "scan.json", `{"reportFormat":"CipherTrailScanReport","reportVersion":1,"tool":{"name":"ciphertrail"}}`)
+	writeRepositoryFile(t, root, "cbom.json", `{"bomFormat":"CycloneDX","metadata":{"tools":{"components":[{"name":"cadi"}]}}}`)
+	writeRepositoryFile(t, root, "scan.json", `{"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"cadi"}}`)
 	cbomPath, reportPath := filepath.Join(root, "cbom.json"), filepath.Join(root, "scan.json")
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"scan", root, "--output", cbomPath, "--scan-report", reportPath}, &stdout, &stderr)
 	if code != 0 {
-		t.Fatalf("legacy output migration failed: %d %s", code, stderr.String())
+		t.Fatalf("output replacement failed: %d %s", code, stderr.String())
 	}
 	data, err := os.ReadFile(cbomPath)
 	if err != nil {
@@ -337,20 +338,20 @@ func TestLegacyOutputsAreSafelyReplacedWithCADIReports(t *testing.T) {
 	if err := cyclonedx.Validate(data); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "ciphertrail") || !strings.Contains(string(data), `"name": "cadi"`) {
-		t.Fatal("replacement CBOM retained old generator or property identifiers")
+	if !strings.Contains(string(data), `"name": "cadi"`) {
+		t.Fatal("replacement CBOM is missing the CADI generator identity")
 	}
 	report := readScanReport(t, reportPath)
 	if report.ReportFormat != "CADIScanReport" || report.Tool.Name != "cadi" || report.Status != "succeeded" {
-		t.Fatalf("replacement report retained its legacy identity: %+v", report)
+		t.Fatalf("replacement report has an incorrect identity or status: %+v", report)
 	}
 }
 
-func TestReportMigrationRejectsUnknownIdentityAndVersion(t *testing.T) {
+func TestReportOutputRejectsUnknownIdentityAndVersion(t *testing.T) {
 	for _, data := range []string{
 		`{"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"other"}}`,
 		`{"reportFormat":"OtherReport","reportVersion":1,"tool":{"name":"cadi"}}`,
-		`{"reportFormat":"CipherTrailScanReport","reportVersion":2,"tool":{"name":"ciphertrail"}}`,
+		`{"reportFormat":"CADIScanReport","reportVersion":2,"tool":{"name":"cadi"}}`,
 		`{"reportFormat":"CADIScanReport","reportVersion":1,"tool":{"name":"cadi"}} {}`,
 	} {
 		path := filepath.Join(t.TempDir(), "report.json")
@@ -358,7 +359,7 @@ func TestReportMigrationRejectsUnknownIdentityAndVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := prepareOutput(path, nil, outputScanReport); err == nil {
-			t.Fatal("migration broadened output ownership beyond known reports")
+			t.Fatal("output ownership accepted an unknown or invalid report")
 		}
 		if current, err := os.ReadFile(path); err != nil || string(current) != data {
 			t.Fatal("rejected output was modified")
@@ -377,7 +378,7 @@ func TestExplicitToolVersionIsConsistent(t *testing.T) {
 	var help bytes.Buffer
 	if code := Run(context.Background(), []string{"help"}, &help, &stderr); code != 0 ||
 		!strings.Contains(help.String(), "Cryptographic Asset Discovery and Inventory") || !strings.Contains(help.String(), "cadi scan") {
-		t.Fatal("help did not identify the renamed project and command")
+		t.Fatal("help did not identify the project and command")
 	}
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "certificate.yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: identity}\nspec: {}\n")
@@ -397,24 +398,26 @@ func TestExplicitToolVersionIsConsistent(t *testing.T) {
 	}
 	if tool.Name != "cadi" || tool.Description != "Cryptographic Asset Discovery and Inventory" ||
 		report.Tool.Name != "cadi" || report.ReportFormat != "CADIScanReport" || report.ReportVersion != 1 {
-		t.Fatal("CBOM/report identities differ from the renamed CLI")
+		t.Fatal("CBOM/report identities differ from the CLI")
 	}
-	if bom.Metadata.Component == nil || !strings.HasPrefix(bom.Metadata.Component.BOMRef, "urn:cadi:") {
-		t.Fatal("project subject did not use the CADI reference namespace")
+	if bom.Metadata.Component == nil {
+		t.Fatal("project subject is missing")
 	}
-	for _, component := range *bom.Components {
-		if !strings.HasPrefix(component.BOMRef, "urn:cadi:") {
-			t.Errorf("component retained an old reference namespace: %s", component.BOMRef)
+	reference := regexp.MustCompile(`^ref-[0-9a-f]{64}$`)
+	components := append([]cdx.Component{*bom.Metadata.Component}, (*bom.Components)...)
+	for _, component := range components {
+		if !reference.MatchString(component.BOMRef) {
+			t.Errorf("component reference is not tool-neutral: %s", component.BOMRef)
 		}
 		if component.Evidence != nil && component.Evidence.Occurrences != nil {
 			for _, occurrence := range *component.Evidence.Occurrences {
-				if !strings.HasPrefix(occurrence.BOMRef, "urn:cadi:") {
-					t.Errorf("occurrence retained an old reference namespace: %s", occurrence.BOMRef)
+				if !reference.MatchString(occurrence.BOMRef) {
+					t.Errorf("occurrence reference is not tool-neutral: %s", occurrence.BOMRef)
 				}
 			}
 		}
 	}
-	if strings.Contains(stdout.String(), "ciphertrail:") || !strings.Contains(stdout.String(), `"cadi:collection-status"`) {
+	if !strings.Contains(stdout.String(), `"cadi:collection-status"`) {
 		t.Fatal("output properties did not consistently use the CADI namespace")
 	}
 }
