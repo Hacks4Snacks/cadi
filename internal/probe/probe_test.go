@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -16,8 +17,26 @@ import (
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
+	cdx "github.com/CycloneDX/cyclonedx-go"
 	"golang.org/x/crypto/ssh"
 )
+
+func assertEndpointSubject(t *testing.T, result inventory.Result, name string) {
+	t.Helper()
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Subjects) != 1 || bom.Metadata.Component == nil ||
+		bom.Metadata.Component.BOMRef != result.Subjects[0] || bom.Metadata.Component.Type != cdx.ComponentTypeApplication ||
+		bom.Metadata.Component.Name != name {
+		t.Fatal("observed endpoint lost its primary component identity")
+	}
+}
 
 func TestTLSAndMTLS(t *testing.T) {
 	for _, mutual := range []bool{false, true} {
@@ -61,9 +80,7 @@ func TestTLSAndMTLS(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
-				t.Fatal(err)
-			}
+			assertEndpointSubject(t, result, "tls://"+collector.Address)
 			found := false
 			for _, entry := range result.Entries {
 				if p := entry.Component.CryptoProperties; p != nil && p.ProtocolProperties != nil {
@@ -145,9 +162,7 @@ func TestSSHStopsBeforeAuthentication(t *testing.T) {
 	if authentications.Load() != 0 {
 		t.Fatal("SSH probe attempted user authentication")
 	}
-	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
-		t.Fatal(err)
-	}
+	assertEndpointSubject(t, result, "ssh://"+listener.Addr().String())
 	found := false
 	for _, entry := range result.Entries {
 		if p := entry.Component.CryptoProperties; p != nil && p.RelatedCryptoMaterialProperties != nil {

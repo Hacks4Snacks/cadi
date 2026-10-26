@@ -90,6 +90,21 @@ func TestScanReportPreservesPartialAndOutputFailures(t *testing.T) {
 			report.Collections[0].Status != "incomplete" || (report.OutputError != "") != (options.OutputError != nil) {
 			t.Fatalf("failure was lost: %+v", report)
 		}
+		if (report.BOMLink != "") != (len(options.CBOM) != 0) {
+			t.Fatal("report lost its generated CBOM link or invented one after encoding failure")
+		}
+	}
+}
+
+func TestScanReportRejectsInvalidCBOMIdentity(t *testing.T) {
+	for _, data := range []string{
+		`{"version":1}`,
+		`{"serialNumber":"not-a-uuid","version":1}`,
+		`{"serialNumber":"urn:uuid:63304c0b-0d43-43cb-b0a7-f75b4b7ecf98","version":0}`,
+	} {
+		if _, err := EncodeReport(nil, ReportOptions{CBOM: []byte(data)}); err == nil {
+			t.Fatal("invalid CBOM identity produced a success-shaped report")
+		}
 	}
 }
 

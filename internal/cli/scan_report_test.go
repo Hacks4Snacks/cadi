@@ -30,6 +30,148 @@ func readScanReport(t *testing.T, path string) scan.Report {
 	return report
 }
 
+func TestReportIdentityAndPrimarySubject(t *testing.T) {
+	for _, scenario := range []string{"go", "nested-modules", "single-nested-module", "workspace", "no-crypto", "python", "overlap", "two-roots", "mixed-languages", "failed-additional-root"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			paths := []string{root}
+			expectedName := "example.test/subject"
+			expectedType := cdx.ComponentTypeLibrary
+			exit := 0
+			if scenario == "python" {
+				writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'value')\n")
+				expectedName, expectedType = filepath.Base(root)+" (Python source)", cdx.ComponentTypeApplication
+			} else if scenario == "workspace" || scenario == "single-nested-module" {
+				writeRepositoryFile(t, root, "child/go.mod", "module example.test/child\n\ngo 1.27.0\n")
+				writeRepositoryFile(t, root, "child/main.go", "package child\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n")
+				expectedName = "example.test/child"
+				if scenario == "workspace" {
+					writeRepositoryFile(t, root, "second/go.mod", "module example.test/second\n\ngo 1.27.0\n")
+					writeRepositoryFile(t, root, "second/main.go", "package second\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n")
+					writeRepositoryFile(t, root, "go.work", "go 1.27.0\nuse (\n./child\n./second\n)\n")
+					expectedName = ""
+				}
+			} else {
+				writeRepositoryFile(t, root, "go.mod", "module example.test/subject\n\ngo 1.27.0\n")
+				source := "package subject\nimport \"crypto/sha256\"\nfunc Run() { _ = sha256.Sum256(nil) }\n"
+				if scenario == "no-crypto" {
+					source = "package subject\nfunc Run() {}\n"
+				}
+				writeRepositoryFile(t, root, "main.go", source)
+			}
+			switch scenario {
+			case "nested-modules":
+				writeRepositoryFile(t, root, "child/go.mod", "module example.test/child\n\ngo 1.27.0\n")
+				writeRepositoryFile(t, root, "child/main.go", "package child\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n")
+			case "overlap":
+				paths = append(paths, filepath.Join(root, "main.go"))
+			case "two-roots":
+				second := t.TempDir()
+				writeRepositoryFile(t, second, "go.mod", "module example.test/second\n\ngo 1.27.0\n")
+				writeRepositoryFile(t, second, "main.go", "package second\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n")
+				paths, expectedName = append(paths, second), ""
+			case "mixed-languages":
+				writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'value')\n")
+				expectedName = ""
+			case "failed-additional-root":
+				paths = append(paths, filepath.Join(t.TempDir(), "missing"))
+				expectedName, exit = "", 1
+			}
+			for _, full := range []bool{false, true} {
+				reportPath := filepath.Join(t.TempDir(), "scan.json")
+				args := append([]string{"scan", "--offline", "--summary", "--analyzers", "go,python", "--scan-report", reportPath}, paths...)
+				if full {
+					args = append(args, "--include-dependencies")
+				}
+				var stdout, stderr bytes.Buffer
+				if code := Run(context.Background(), args, &stdout, &stderr); code != exit {
+					t.Fatalf("scan returned %d; want %d: %s", code, exit, stderr.String())
+				}
+				var bom cdx.BOM
+				if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
+					t.Fatal(err)
+				}
+				subject := bom.Metadata.Component
+				if expectedName == "" {
+					if subject != nil {
+						t.Errorf("ambiguous input was assigned an invented primary subject: %+v", subject)
+					}
+				} else if subject == nil || subject.Name != expectedName || subject.Type != expectedType || subject.BOMRef == "" {
+					t.Errorf("primary subject missing or incorrect: %+v", subject)
+				}
+				components := map[string]cdx.Component{}
+				if subject != nil {
+					components[subject.BOMRef] = *subject
+				}
+				crypto := 0
+				for _, component := range *bom.Components {
+					if _, duplicate := components[component.BOMRef]; duplicate {
+						t.Errorf("subject duplicated in components: %s", component.BOMRef)
+					}
+					components[component.BOMRef] = component
+					if component.Type == cdx.ComponentTypeCryptographicAsset {
+						crypto++
+					}
+				}
+				for _, dependency := range *bom.Dependencies {
+					if _, exists := components[dependency.Ref]; !exists {
+						t.Errorf("dependency source missing: %s", dependency.Ref)
+					}
+					for _, ref := range *dependency.Dependencies {
+						if _, exists := components[ref]; !exists {
+							t.Errorf("dependency target missing: %s", ref)
+						}
+					}
+				}
+				data, err := os.ReadFile(reportPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var report struct {
+					BOMLink    string
+					Tool       scan.ReportTool
+					Statistics scan.ReportStatistics
+				}
+				if err := json.Unmarshal(data, &report); err != nil {
+					t.Fatal(err)
+				}
+				link, err := cdx.NewBOMLink(bom.SerialNumber, bom.Version, nil)
+				if err != nil || report.BOMLink != link.String() {
+					t.Errorf("scan report is not linked to this CBOM: %q, %v", report.BOMLink, err)
+				}
+				if report.Tool.Version != (*bom.Metadata.Tools.Components)[0].Version {
+					t.Error("scanner versions differ between output artifacts")
+				}
+				if report.Statistics.ExportedComponents == nil || *report.Statistics.ExportedComponents != len(components) ||
+					report.Statistics.CryptographicAssets == nil || *report.Statistics.CryptographicAssets != crypto {
+					t.Errorf("subject promotion corrupted report statistics: %+v", report.Statistics)
+				}
+			}
+		})
+	}
+}
+
+func TestSummaryResolvesMetadataSubjectReferences(t *testing.T) {
+	var result inventory.Result
+	provider := result.Add(cdx.Component{Type: cdx.ComponentTypeLibrary, Name: "crypto-provider"}, inventory.Evidence{}, "")
+	result.Subjects = []string{provider}
+	hash := result.Add(inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash),
+		inventory.Evidence{Kind: "configured", Collector: "go", Location: "hash.go", Line: 3}, provider)
+	result.DependOn(hash, provider)
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary bytes.Buffer
+	if err := writeSummary(&summary, data, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary.String(), "Cryptographic findings: 1") ||
+		!strings.Contains(summary.String(), "crypto-provider") {
+		t.Fatal("primary library was lost as implementation context or counted as a crypto finding")
+	}
+}
+
 func TestCLISeparateScanReportAndCompactCBOM(t *testing.T) {
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "certificate.yaml", "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: example}\nspec: {}\n")

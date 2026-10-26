@@ -226,9 +226,12 @@ func TestDependencyInventoryIsOptIn(t *testing.T) {
 		if err := json.Unmarshal(stdout.Bytes(), &bom); err != nil {
 			t.Fatal(err)
 		}
-		var owner, provider, unrelated bool
+		owner := bom.Metadata != nil && bom.Metadata.Component != nil && bom.Metadata.Component.Name == "example.test/cli"
+		var provider, unrelated bool
 		for _, component := range *bom.Components {
-			owner = owner || component.Name == "example.test/cli"
+			if component.Name == "example.test/cli" {
+				t.Fatal("primary module duplicated outside metadata.component")
+			}
 			provider = provider || component.Name == "Go standard library"
 			unrelated = unrelated || component.Name == "example.test/formatting"
 			if component.Type == cdx.ComponentTypeCryptographicAsset && component.Name == "SHA-256" {

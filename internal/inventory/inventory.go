@@ -89,7 +89,9 @@ type Dependency struct {
 
 // Result is the language-independent collector output contract.
 type Result struct {
-	Entries      []Entry
+	Entries []Entry
+	// Subjects identifies collected primary components, not ordinary dependencies.
+	Subjects     []string
 	Dependencies []Dependency
 	Details      []RunMetadata
 	Diagnostics  []Diagnostic
@@ -187,6 +189,7 @@ func (r *Result) DependOn(source, target string) {
 // Merge incorporates another collector's entries, relationships, context, and limitations.
 func (r *Result) Merge(other Result) {
 	r.Entries = append(r.Entries, other.Entries...)
+	r.Subjects = append(r.Subjects, other.Subjects...)
 	r.Dependencies = append(r.Dependencies, other.Dependencies...)
 	r.Details = append(r.Details, other.Details...)
 	r.Diagnostics = append(r.Diagnostics, other.Diagnostics...)
@@ -220,7 +223,9 @@ var hashAlgorithms = map[string]struct {
 	primitive                       cdx.CryptoPrimitive
 	family, parameter, oid, hmacOID string
 }{
+	"MD4":         {cdx.CryptoPrimitiveHash, "MD4", "128", "", ""},
 	"MD5":         {cdx.CryptoPrimitiveHash, "MD5", "128", "1.2.840.113549.2.5", ""},
+	"RIPEMD-160":  {cdx.CryptoPrimitiveHash, "RIPEMD", "160", "", ""},
 	"SHA-1":       {cdx.CryptoPrimitiveHash, "SHA-1", "160", "1.3.14.3.2.26", ""},
 	"SHA-224":     {cdx.CryptoPrimitiveHash, "SHA-2", "224", "2.16.840.1.101.3.4.2.4", "1.2.840.113549.2.8"},
 	"SHA-256":     {cdx.CryptoPrimitiveHash, "SHA-2", "256", "2.16.840.1.101.3.4.2.1", "1.2.840.113549.2.9"},

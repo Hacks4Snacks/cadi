@@ -341,6 +341,46 @@ func (v *values) integer(value ssa.Value) (int64, bool) {
 	return constant.Int64Val(number)
 }
 
+// constructorAPI identifies a visible factory, without executing it or assuming
+// its argument values. Conflicting branches, fields, and opaque wrappers stay unknown.
+func constructorAPI(value ssa.Value) apiIdentity {
+	seen := map[ssa.Value]bool{}
+	var resolve func(ssa.Value, int) apiIdentity
+	resolve = func(value ssa.Value, depth int) apiIdentity {
+		if value == nil || depth > 16 || seen[value] {
+			return apiIdentity{}
+		}
+		seen[value] = true
+		defer delete(seen, value)
+		switch value := value.(type) {
+		case *ssa.Call:
+			return calledAPI(&value.Call)
+		case *ssa.Extract:
+			if value.Index == 0 {
+				return resolve(value.Tuple, depth+1)
+			}
+		case *ssa.MakeInterface:
+			return resolve(value.X, depth+1)
+		case *ssa.ChangeInterface:
+			return resolve(value.X, depth+1)
+		case *ssa.ChangeType:
+			return resolve(value.X, depth+1)
+		case *ssa.Phi:
+			var common apiIdentity
+			for index, edge := range value.Edges {
+				next := resolve(edge, depth+1)
+				if next == (apiIdentity{}) || index > 0 && next != common {
+					return apiIdentity{}
+				}
+				common = next
+			}
+			return common
+		}
+		return apiIdentity{}
+	}
+	return resolve(value, 0)
+}
+
 func (v *values) resolve(value ssa.Value, seen map[ssa.Value]bool, depth int) constant.Value {
 	if value == nil || depth > 16 || seen[value] {
 		return nil

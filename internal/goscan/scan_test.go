@@ -271,6 +271,231 @@ func Run(r *rsa.PrivateKey, e *ecdsa.PrivateKey, ed ed25519.PrivateKey, opts cry
 	}
 }
 
+func TestReportedKubernetesAPIsAreClassified(t *testing.T) {
+	directory := fixture(t, `package example
+import (
+ "crypto"
+ "crypto/cipher"
+ "crypto/ecdsa"
+ "crypto/ed25519"
+ "crypto/mldsa"
+ "crypto/rsa"
+ "crypto/subtle"
+ "crypto/tls"
+ "crypto/x509"
+ "net"
+ "golang.org/x/crypto/cryptobyte"
+ "golang.org/x/crypto/nacl/secretbox"
+)
+func Run(aead cipher.AEAD, mode cipher.BlockMode, hash crypto.Hash, params mldsa.Parameters, rsaPublic *rsa.PublicKey, edPublic ed25519.PublicKey, ecPublic *ecdsa.PublicKey, mlPublic *mldsa.PublicKey, ecPrivate *ecdsa.PrivateKey, mlPrivate *mldsa.PrivateKey, pool *x509.CertPool, cert, parent *x509.Certificate, config *tls.Config, conn *tls.Conn, listener net.Listener, builder *cryptobyte.Builder, encoded *cryptobyte.String, nonce *[24]byte, key *[32]byte) {
+ _ = aead.NonceSize()
+ _ = aead.Seal(nil, nil, []byte("PRIVATE_PAYLOAD_SENTINEL"), nil)
+ _, _ = aead.Open(nil, nil, nil, nil)
+ _ = hash.New()
+ _ = mldsa.MLDSA44()
+ _, _ = mldsa.GenerateKey(params)
+ _ = mldsa.MLDSA65()
+ _ = mldsa.MLDSA87()
+ _ = cryptobyte.NewBuilder(nil)
+ builder.AddUint16LengthPrefixed(func(*cryptobyte.Builder) {})
+ builder.AddBytes([]byte("PRIVATE_ENCODING_SENTINEL"))
+ builder.AddUint32(7)
+ _, _ = builder.Bytes()
+ _ = rsaPublic.Size()
+ _ = mlPublic.Parameters()
+ _ = params.String()
+ _ = edPublic.Equal(nil)
+ _ = ecPublic.Equal(nil)
+ _ = mlPublic.Equal(nil)
+ _ = subtle.ConstantTimeCompare(nil, nil)
+ pool.AddCert(cert)
+ _, _ = cert.Verify(x509.VerifyOptions{})
+ _ = cert.VerifyHostname("PRIVATE_HOST_SENTINEL")
+ _ = cert.CheckSignatureFrom(parent)
+ _ = config.Clone()
+ _ = ecPrivate.Public()
+ _, _ = secretbox.Open(nil, nil, nonce, key)
+ _ = secretbox.Seal(nil, []byte("PRIVATE_BOX_SENTINEL"), nonce, key)
+ var output cryptobyte.String
+ _ = encoded.ReadUint16LengthPrefixed(&output)
+ _ = aead.Overhead()
+ mode.CryptBlocks(nil, nil)
+ _ = tls.NewListener(listener, config)
+ _ = mlPrivate.PublicKey()
+ _ = conn.Close()
+ _ = tls.CurveID(0).String()
+ _ = tls.CipherSuites()
+ _ = tls.InsecureCipherSuites()
+}`)
+	result, err := (Source{Path: directory, Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("%d reported APIs remain unclassified; first: %+v", len(result.Diagnostics), result.Diagnostics[0])
+	}
+	assets := 0
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties == nil {
+			continue
+		}
+		assets++
+		if entry.Evidence.Kind != "configured" || entry.Evidence.Collector != "go" || entry.Evidence.Line == 0 {
+			t.Fatal("new models lost source evidence")
+		}
+		if properties := entry.Component.CryptoProperties.RelatedCryptoMaterialProperties; properties != nil {
+			if properties.Type != cdx.RelatedCryptoMaterialTypePublicKey || properties.Value != "" || properties.Size != nil {
+				t.Fatal("public-key access inferred material or a key size")
+			}
+		}
+	}
+	if assets != 16 {
+		t.Fatalf("crypto assets=%d; want 16 operations/selections and no assets for 21 helper APIs", assets)
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_") {
+			t.Fatalf("invalid output or private argument leakage: %v", err)
+		}
+	}
+}
+
+func TestReportedNonAssetAPIsRequireExactIdentity(t *testing.T) {
+	for _, api := range []apiIdentity{
+		{"crypto/cipher", "AEAD", "NonceSize"},
+		{"crypto/cipher", "AEAD", "Overhead"},
+		{"crypto/rsa", "PublicKey", "Size"},
+		{"crypto/mldsa", "PublicKey", "Parameters"},
+		{"crypto/mldsa", "Parameters", "String"},
+		{"crypto/ed25519", "PublicKey", "Equal"},
+		{"crypto/ecdsa", "PublicKey", "Equal"},
+		{"crypto/mldsa", "PublicKey", "Equal"},
+		{"crypto/subtle", "", "ConstantTimeCompare"},
+		{"crypto/x509", "Certificate", "VerifyHostname"},
+		{"crypto/tls", "Config", "Clone"},
+		{"crypto/tls", "Conn", "Close"},
+		{"crypto/tls", "CurveID", "String"},
+		{"crypto/tls", "", "CipherSuites"},
+		{"crypto/tls", "", "InsecureCipherSuites"},
+		{"golang.org/x/crypto/cryptobyte", "", "NewBuilder"},
+		{"golang.org/x/crypto/cryptobyte", "Builder", "AddUint16LengthPrefixed"},
+		{"golang.org/x/crypto/cryptobyte", "Builder", "AddBytes"},
+		{"golang.org/x/crypto/cryptobyte", "Builder", "AddUint32"},
+		{"golang.org/x/crypto/cryptobyte", "Builder", "Bytes"},
+		{"golang.org/x/crypto/cryptobyte", "String", "ReadUint16LengthPrefixed"},
+	} {
+		if !nonAssetAPI(api) {
+			t.Errorf("helper remains a coverage gap: %+v", api)
+		}
+		for _, other := range []apiIdentity{
+			{"example.test/other", api.receiver, api.name},
+			{api.path, "DifferentReceiver", api.name},
+			{api.path, api.receiver, "Unmodeled" + api.name},
+		} {
+			if nonAssetAPI(other) {
+				t.Errorf("helper classification is too broad: %+v", other)
+			}
+		}
+	}
+}
+
+func TestNewOperationModelsPreserveKnownAndUnknownParameters(t *testing.T) {
+	source := `package example
+import (
+ "crypto"
+ "crypto/cipher"
+ "crypto/mldsa"
+ "golang.org/x/crypto/nacl/secretbox"
+)
+func Run(hash crypto.Hash, params mldsa.Parameters, aead cipher.AEAD, mode cipher.BlockMode, block cipher.Block, choose bool, nonce *[24]byte, key *[32]byte) {
+ gcm, _ := cipher.NewGCM(block)
+ encryptor := cipher.NewCBCEncrypter(block, nil)
+ decryptor := cipher.NewCBCDecrypter(block, nil)
+ var ambiguous cipher.BlockMode
+ if choose { ambiguous = encryptor } else { ambiguous = decryptor }
+ var same, different mldsa.Parameters
+ if choose { same = mldsa.MLDSA65(); different = mldsa.MLDSA44() } else { same = mldsa.MLDSA65(); different = mldsa.MLDSA87() }
+`
+	tests := []struct {
+		code, symbol, family, parameter, oid string
+		mode                                 cdx.CryptoAlgorithmMode
+		functions                            []cdx.CryptoFunction
+	}{
+		{"_ = crypto.SHA256.New()", "(crypto.Hash).New", "SHA-2", "256", "2.16.840.1.101.3.4.2.1", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = crypto.Hash.New(crypto.SHA512_256)", "(crypto.Hash).New", "SHA-2", "256", "2.16.840.1.101.3.4.2.6", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = crypto.MD4.New()", "(crypto.Hash).New", "MD4", "128", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = crypto.RIPEMD160.New()", "(crypto.Hash).New", "RIPEMD", "160", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = hash.New()", "(crypto.Hash).New", "", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = crypto.Hash(999).New()", "(crypto.Hash).New", "", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = crypto.MD5SHA1.New()", "(crypto.Hash).New", "", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_ = crypto.MLDSAMu.New()", "(crypto.Hash).New", "", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDigest}},
+		{"_, _ = mldsa.GenerateKey(mldsa.MLDSA44())", "crypto/mldsa.GenerateKey", "ML-DSA", "44", "2.16.840.1.101.3.4.3.17", "", []cdx.CryptoFunction{cdx.CryptoFunctionKeygen}},
+		{"_, _ = mldsa.GenerateKey(mldsa.MLDSA87())", "crypto/mldsa.GenerateKey", "ML-DSA", "87", "2.16.840.1.101.3.4.3.19", "", []cdx.CryptoFunction{cdx.CryptoFunctionKeygen}},
+		{"_, _ = mldsa.GenerateKey(same)", "crypto/mldsa.GenerateKey", "ML-DSA", "65", "2.16.840.1.101.3.4.3.18", "", []cdx.CryptoFunction{cdx.CryptoFunctionKeygen}},
+		{"_, _ = mldsa.GenerateKey(different)", "crypto/mldsa.GenerateKey", "ML-DSA", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionKeygen}},
+		{"_, _ = mldsa.GenerateKey(params)", "crypto/mldsa.GenerateKey", "ML-DSA", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionKeygen}},
+		{"_ = aead.Seal(nil, nil, nil, nil)", "(crypto/cipher.AEAD).Seal", "", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionTag}},
+		{"_, _ = aead.Open(nil, nil, nil, nil)", "(crypto/cipher.AEAD).Open", "", "", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDecrypt, cdx.CryptoFunctionVerify}},
+		{"_ = gcm.Seal(nil, nil, nil, nil)", "(crypto/cipher.AEAD).Seal", "", "", "", cdx.CryptoAlgorithmModeGCM, []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionTag}},
+		{"_ = cipher.AEAD.Seal(gcm, nil, nil, nil, nil)", "(crypto/cipher.AEAD).Seal", "", "", "", cdx.CryptoAlgorithmModeGCM, []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionTag}},
+		{"encryptor.CryptBlocks(nil, nil)", "(crypto/cipher.BlockMode).CryptBlocks", "", "", "", cdx.CryptoAlgorithmModeCBC, []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt}},
+		{"decryptor.CryptBlocks(nil, nil)", "(crypto/cipher.BlockMode).CryptBlocks", "", "", "", cdx.CryptoAlgorithmModeCBC, []cdx.CryptoFunction{cdx.CryptoFunctionDecrypt}},
+		{"mode.CryptBlocks(nil, nil)", "(crypto/cipher.BlockMode).CryptBlocks", "", "", "", "", nil},
+		{"ambiguous.CryptBlocks(nil, nil)", "(crypto/cipher.BlockMode).CryptBlocks", "", "", "", "", nil},
+		{"_ = secretbox.Seal(nil, nil, nonce, key)", "golang.org/x/crypto/nacl/secretbox.Seal", "Salsa20", "256", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionTag}},
+		{"_, _ = secretbox.Open(nil, nil, nonce, key)", "golang.org/x/crypto/nacl/secretbox.Open", "Salsa20", "256", "", "", []cdx.CryptoFunction{cdx.CryptoFunctionDecrypt, cdx.CryptoFunctionVerify}},
+	}
+	firstLine := strings.Count(source, "\n") + 1
+	for _, test := range tests {
+		source += test.code + "\n"
+	}
+	source += "}\n"
+	result, err := (Source{Path: fixture(t, source), Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]bool{}
+	for _, entry := range result.Entries {
+		index := entry.Evidence.Line - firstLine
+		if index < 0 || index >= len(tests) || entry.Component.CryptoProperties == nil {
+			continue
+		}
+		want := tests[index]
+		if entry.Evidence.Symbol != want.symbol && !strings.Contains(entry.Evidence.Symbol, want.symbol+"(") {
+			continue
+		}
+		seen[index] = true
+		p := entry.Component.CryptoProperties
+		a := p.AlgorithmProperties
+		if a == nil {
+			t.Errorf("%s is not an algorithm operation", want.code)
+			continue
+		}
+		var functions []cdx.CryptoFunction
+		if a.CryptoFunctions != nil {
+			functions = *a.CryptoFunctions
+		}
+		if a.AlgorithmFamily != want.family || a.ParameterSetIdentifier != want.parameter || p.OID != want.oid ||
+			a.Mode != want.mode || !slices.Equal(functions, want.functions) {
+			t.Errorf("%s: incorrect resolved or guessed facts: %+v, oid=%q", want.code, a, p.OID)
+		}
+		if a.ClassicalSecurityLevel != nil || a.NistQuantumSecurityLevel != nil {
+			t.Fatal("API recognition inferred a security verdict")
+		}
+	}
+	for index, test := range tests {
+		if !seen[index] {
+			t.Errorf("missing operation: %s", test.code)
+		}
+	}
+	if len(result.Diagnostics) != 0 {
+		t.Errorf("modeled operations still produce diagnostics: %+v", result.Diagnostics)
+	}
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGoSourceSymbolsParametersAndGaps(t *testing.T) {
 	directory := fixture(t, `package example
 import (
@@ -1297,17 +1522,17 @@ func Run(client *ssh.Client, session *ssh.Session, channel ssh.Channel, key *rsa
 func TestUnknownCryptoOperationsStillProduceDiagnostics(t *testing.T) {
 	directory := fixture(t, `package example
 import ("crypto"; "crypto/x509"; "crypto/tls"; "golang.org/x/crypto/ssh")
-func Run(signer crypto.Signer, certificate *x509.Certificate, key ssh.PublicKey, group tls.CurveID) {
+func Run(signer crypto.Signer, certificate *x509.Certificate, key ssh.PublicKey, scheme tls.SignatureScheme) {
  _, _ = signer.Sign(nil, nil, crypto.SHA256)
- _, _ = certificate.Verify(x509.VerifyOptions{})
+ _ = certificate.CheckSignature(x509.SHA256WithRSA, nil, nil)
  _ = key.Verify(nil, nil)
- _ = group.String()
+ _ = scheme.String()
 }`)
 	result, err := (Source{Path: directory}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, symbol := range []string{"crypto.Signer).Sign", "x509.Certificate).Verify", "ssh.PublicKey).Verify", "tls.CurveID).String"} {
+	for _, symbol := range []string{"crypto.Signer).Sign", "x509.Certificate).CheckSignature", "ssh.PublicKey).Verify", "tls.SignatureScheme).String"} {
 		found := false
 		for _, diagnostic := range result.Diagnostics {
 			if strings.Contains(diagnostic.Message, symbol) {
@@ -1500,7 +1725,7 @@ func TestNonAssetClassificationRequiresExactIdentity(t *testing.T) {
 	for _, api := range []apiIdentity{
 		{"example.test/fixture", "Curve", "Params"},
 		{"example.test/fixture", "Conn", "Close"},
-		{"crypto/tls", "CurveID", "String"},
+		{"crypto/tls", "SignatureScheme", "String"},
 		{"golang.org/x/crypto/ssh", "Channel", "SendRequest"},
 		{"crypto/x509", "CertPool", "AppendCertsFromPEM"},
 		{"crypto/tls", "Conn", "HandshakeContext"},

@@ -258,12 +258,18 @@ func writeSummary(writer io.Writer, data []byte, incomplete bool) error {
 	}
 	components := map[string]cdx.Component{}
 	var assets []cdx.Component
+	addComponent := func(component cdx.Component) {
+		components[component.BOMRef] = component
+		if component.Type == cdx.ComponentTypeCryptographicAsset {
+			assets = append(assets, component)
+		}
+	}
+	if bom.Metadata != nil && bom.Metadata.Component != nil {
+		addComponent(*bom.Metadata.Component)
+	}
 	if bom.Components != nil {
 		for _, component := range *bom.Components {
-			components[component.BOMRef] = component
-			if component.Type == cdx.ComponentTypeCryptographicAsset {
-				assets = append(assets, component)
-			}
+			addComponent(component)
 		}
 	}
 	providers := map[string][]string{}

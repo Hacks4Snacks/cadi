@@ -120,6 +120,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	parent := result.Add(cdx.Component{Type: cdx.ComponentTypeApplication,
 		Name: filepath.Base(s.Selection.Root) + " (Python source)", BOMRef: inventory.Ref("python-source", s.Selection.Root)},
 		inventory.Evidence{Kind: "present", Collector: "python", Location: s.Selection.Root}, "")
+	result.Subjects = append(result.Subjects, parent)
 	providers := map[string]string{}
 	for _, document := range documents {
 		shadowed, err := localProviders(s.Selection.Root, document.file.Path)

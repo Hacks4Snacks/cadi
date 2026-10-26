@@ -121,6 +121,12 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	build["tags"] = s.Tags
 	result.Metadata("build-context", build)
 	var failures error
+	primaryModule := ""
+	if slices.Contains(modules, root) {
+		primaryModule = root
+	} else if len(modules) == 1 {
+		primaryModule = modules[0]
+	}
 	selected := make(map[string]bool, len(selection.Files))
 	for _, file := range selection.Files {
 		selected[file.Path] = true
@@ -134,6 +140,9 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		}
 		modulesRun++
 		partial, err := s.scanModule(ctx, root, module, env, build["GOVERSION"], selected)
+		if module != primaryModule {
+			partial.Subjects = nil
+		}
 		result.Merge(partial)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("%s: %w", relative(root, module), err))
@@ -248,6 +257,9 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 		parents[pkg.PkgPath] = component.BOMRef
 		if !moduleEntries[component.BOMRef] {
 			result.Add(component, evidence, "")
+			if pkg.Module != nil && pkg.Module.Main && filepath.Clean(pkg.Module.Dir) == directory {
+				result.Subjects = append(result.Subjects, component.BOMRef)
+			}
 			moduleEntries[component.BOMRef] = true
 		}
 		loadErrors = append(loadErrors, packageLoadProblems(pkg)...)

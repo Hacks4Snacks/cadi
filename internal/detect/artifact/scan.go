@@ -46,25 +46,31 @@ func (Detector) Detect(ctx context.Context, file *input.File) (inventory.Result,
 			result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: file.Evidence.Location, Message: "native binary not analyzed: no Go build information"})
 			return result, false, nil
 		}
-		addBuildInfo(&result, info, file.Evidence, file.Parent)
+		ref := addBuildInfo(&result, info, file.Evidence, file.Parent)
+		if file.Explicit && file.Parent == "" {
+			result.Subjects = append(result.Subjects, ref)
+		}
 		return result, true, nil
 	}
 	data, err := file.ReadAll(ctx, input.MaxAssetBytes)
 	if err != nil {
 		return result, false, err
 	}
-	found, err := inspectBytes(&result, data, file.Evidence, file.Parent)
+	found, err := inspectBytes(&result, data, file.Evidence, file.Parent, file.Explicit)
 	return result, found, err
 }
 
-func inspectBytes(result *inventory.Result, data []byte, evidence inventory.Evidence, parent string) (bool, error) {
+func inspectBytes(result *inventory.Result, data []byte, evidence inventory.Evidence, parent string, explicit bool) (bool, error) {
 	if binaryMagic(data) {
 		info, err := buildinfo.Read(bytes.NewReader(data))
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, inventory.Diagnostic{Location: evidence.Location, Message: "native binary not analyzed: no Go build information"})
 			return false, nil
 		}
-		addBuildInfo(result, info, evidence, parent)
+		ref := addBuildInfo(result, info, evidence, parent)
+		if explicit && parent == "" {
+			result.Subjects = append(result.Subjects, ref)
+		}
 		return true, nil
 	}
 	if opensslCandidate(evidence.Location) {
@@ -102,7 +108,7 @@ func binaryMagic(data []byte) bool {
 		bytes.Equal(data[:4], []byte{0xfe, 0xed, 0xfa, 0xce})
 }
 
-func addBuildInfo(result *inventory.Result, info *debug.BuildInfo, evidence inventory.Evidence, parent string) {
+func addBuildInfo(result *inventory.Result, info *debug.BuildInfo, evidence inventory.Evidence, parent string) string {
 	name := info.Path
 	if name == "" {
 		name = filepath.Base(evidence.Location)
@@ -139,4 +145,5 @@ func addBuildInfo(result *inventory.Result, info *debug.BuildInfo, evidence inve
 		}
 		addDependency(module)
 	}
+	return binary
 }

@@ -67,6 +67,7 @@ func (p SSH) Collect(ctx context.Context) (inventory.Result, error) {
 		Time: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	parent := result.Add(cdx.Component{Type: "application", Name: evidence.Location}, evidence, "")
+	result.Subjects = append(result.Subjects, parent)
 	keyRef, err := material.AddSSHKey(&result, key, evidence, parent)
 	if err != nil {
 		return result, err

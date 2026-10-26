@@ -96,6 +96,7 @@ func (p TLS) Collect(ctx context.Context) (inventory.Result, error) {
 	}
 	endpoint := cdx.Component{Type: "application", Name: evidence.Location, BOMRef: inventory.Ref("tls-endpoint", p.Address, config.ServerName)}
 	parent := result.Add(endpoint, evidence, "")
+	result.Subjects = append(result.Subjects, parent)
 	var certificates []cdx.RelatedCryptographicAsset
 	for _, certificate := range state.PeerCertificates {
 		ref, err := material.AddCertificate(&result, certificate, evidence, parent)

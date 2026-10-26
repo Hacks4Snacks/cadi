@@ -2,6 +2,7 @@ package cyclonedx
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -162,15 +163,21 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 			}
 		}
 	}
+	subject, err := primarySubject(collections, components)
+	if err != nil {
+		return nil, err
+	}
 	scope := "full-dependencies"
 	if !options.IncludeDependencies {
 		scope = "crypto-focused"
-		focusGraph(components, edges, owners)
+		focusGraph(components, edges, owners, subject)
 	}
 	metadata = append(metadata, cdx.Property{Name: "ciphertrail:output-scope", Value: scope})
 	ordered := make([]cdx.Component, 0, len(components))
 	for _, component := range components {
-		ordered = append(ordered, *component)
+		if component.BOMRef != subject {
+			ordered = append(ordered, *component)
+		}
 	}
 	dependencies := make([]cdx.Dependency, 0, len(edges))
 	for ref, targets := range edges {
@@ -191,12 +198,17 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	slices.SortFunc(metadata, compareProperty)
 	metadata = slices.Compact(metadata)
 	bom := cdx.NewBOM()
+	bom.SerialNumber, err = newSerialNumber()
+	if err != nil {
+		return nil, err
+	}
 	bom.SpecVersion = cdx.SpecVersion1_7
 	bom.JSONSchema = schemaURL
 	bom.Components = &ordered
 	bom.Dependencies = &dependencies
 	bom.Metadata = &cdx.Metadata{
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Component:  components[subject],
 		Properties: &metadata,
 		Tools: &cdx.ToolsChoice{Components: &[]cdx.Component{
 			{Type: "application", Name: "ciphertrail", Version: options.ToolVersion},
@@ -215,6 +227,52 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	return buffer.Bytes(), nil
 }
 
+func newSerialNumber() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", fmt.Errorf("generate CBOM identity: %w", err)
+	}
+	// UUIDv4 version and RFC 9562 variant bits.
+	id[6] = id[6]&0x0f | 0x40
+	id[8] = id[8]&0x3f | 0x80
+	return fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), nil
+}
+
+func primarySubject(collections []inventory.Collection, components map[string]*cdx.Component) (string, error) {
+	subjects := map[string]bool{}
+	unknown := false
+	for _, collection := range collections {
+		for _, ref := range collection.Result.Subjects {
+			if components[ref] == nil {
+				return "", fmt.Errorf("missing primary subject %q", ref)
+			}
+			subjects[ref] = true
+		}
+		if len(collection.Result.Subjects) != 0 {
+			continue
+		}
+		deduplicated := false
+		for _, coverage := range collection.Result.Coverage {
+			switch coverage.Status {
+			case "deduplicated":
+				deduplicated = true
+			case "not-applicable":
+			default:
+				unknown = true
+			}
+		}
+		if !deduplicated || collection.Err != nil || len(collection.Result.Entries) != 0 {
+			unknown = true
+		}
+	}
+	if !unknown && len(subjects) == 1 {
+		for ref := range subjects {
+			return ref, nil
+		}
+	}
+	return "", nil
+}
+
 func addEdge(graph map[string]map[string]bool, source, target string) {
 	if graph[source] == nil {
 		graph[source] = make(map[string]bool)
@@ -222,8 +280,11 @@ func addEdge(graph map[string]map[string]bool, source, target string) {
 	graph[source][target] = true
 }
 
-func focusGraph(components map[string]*cdx.Component, edges, owners map[string]map[string]bool) {
+func focusGraph(components map[string]*cdx.Component, edges, owners map[string]map[string]bool, subject string) {
 	var pending []string
+	if subject != "" {
+		pending = append(pending, subject)
+	}
 	for ref, component := range components {
 		if component.Type == cdx.ComponentTypeCryptographicAsset {
 			pending = append(pending, ref)

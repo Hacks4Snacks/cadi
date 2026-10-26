@@ -1,7 +1,9 @@
 .PHONY: build test check clean
 
+VERSION ?= dev
+
 build:
-	go build -trimpath -o bin/ciphertrail ./cmd/ciphertrail
+	go build -trimpath -ldflags "-X ciphertrail/internal/cli.Version=$(VERSION)" -o bin/ciphertrail ./cmd/ciphertrail
 
 test:
 	go test ./...

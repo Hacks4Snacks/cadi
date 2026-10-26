@@ -21,6 +21,16 @@ make build
 ./bin/ciphertrail scan . --output cbom.json
 ```
 
+Stamp an explicit scanner release version with:
+
+```sh
+make build VERSION=v0.1.0
+```
+
+This version is shared by the CLI, CBOM generator identity, and scan report. It
+does not set the version of the project being scanned. Without a release
+override, available module/VCS build information identifies development builds.
+
 The module path is `ciphertrail` for local development. Publishing under a
 repository namespace requires updating the module path and internal imports.
 
@@ -144,8 +154,9 @@ To include the full collected software/dependency inventory instead:
 Both modes use the same collectors and preserve crypto asset references,
 evidence, errors, and uncertainty. Only the exported component/relationship
 scope changes. A default scan with no discovered cryptographic assets can
-contain no components; concise execution/coverage qualifications remain in its
-header, with detailed context available in the optional scan report and CLI
+have an empty `components` array while still identifying its primary subject in
+`metadata.component`; that subject is not a crypto finding. Concise
+execution/coverage qualifications remain in the header, with detailed context available in the optional scan report and CLI
 diagnostics. Go binary build information alone establishes dependency presence,
 not cryptographic use, so use `--include-dependencies` to export that inventory.
 Neither omitted software nor an empty crypto inventory proves absence of
@@ -175,7 +186,7 @@ display names during export:
 Known OIDs are emitted in `cryptoProperties.oid`. The bounded mappings cover
 fixed hashes, supported SHA-2/SHA-3 HMAC identities, resolved AES mode/key-size
 combinations, explicit RSA-OAEP/PSS schemes, Ed25519/Ed448 and X25519/X448
-identities, ML-KEM parameter sets, and recognized X.509 signature algorithms.
+identities, ML-KEM and ML-DSA parameter sets, and recognized X.509 signature algorithms.
 Mappings follow the [NIST CSOR](https://csrc.nist.gov/projects/computer-security-objects-register/algorithm-registration),
 [RFC 4231](https://www.rfc-editor.org/rfc/rfc4231),
 [RFC 8017](https://www.rfc-editor.org/rfc/rfc8017), and
@@ -230,11 +241,14 @@ not every module in an unrelated checkout.
 
 Recognizers cover common constructors and operations in these API families:
 
-- RSA, AES, DES/3DES, ECDSA, Ed25519, ECDH/X25519, and ML-KEM.
-- MD5, SHA-1, SHA-2, SHA-3, SHAKE constructors, and fixed-size BLAKE2 operations.
+- RSA, AES, DES/3DES, ECDSA, Ed25519, ECDH/X25519, ML-KEM, and ML-DSA selection/key generation.
+- MD4/MD5, RIPEMD-160, SHA-1, SHA-2, SHA-3, SHAKE constructors, fixed-size BLAKE2
+  operations, and `crypto.Hash.New` selection.
 - HMAC, HKDF, PBKDF2, bcrypt, scrypt, and Argon2.
 - ChaCha20, ChaCha20-Poly1305, and XChaCha20-Poly1305.
 - Block-cipher mode constructors, including CBC, CTR, and GCM.
+- AEAD encryption/authentication and decryption/verification, block-mode
+  operations, and NaCl XSalsa20-Poly1305 secretbox operations.
 - X.509 certificate/key operations, certificate requests, TLS entry points,
   TLS configuration initializers, and SSH key/connection APIs.
 - Elliptic-curve selection, public-key access, X.509 certificate-pool imports,
@@ -249,19 +263,33 @@ do not create fictitious cryptographic assets.
 | APIs                                                    | Inventory treatment                                                |
 |---------------------------------------------------------|--------------------------------------------------------------------|
 | `elliptic.P224/P256/P384/P521`                            | Selected curve; no inferred signing or key-agreement use            |
+| `crypto.Hash.New`                                        | Hash operation; a resolved hash identifier supplies native facts, not proof of registration or availability |
+| `cipher.AEAD.Seal/Open`                                  | Authenticated encryption/decryption intent; opaque receiver algorithms and key sizes remain unknown |
+| `cipher.AEAD.NonceSize/Overhead`                          | Metadata access; no new asset |
+| `cipher.BlockMode.CryptBlocks`                           | Block operation; CBC direction is identified only from a visible matching constructor |
+| `mldsa.MLDSA44/MLDSA65/MLDSA87`, `mldsa.GenerateKey`       | ML-DSA parameter selection and key generation; no security-level or execution claim |
+| `nacl/secretbox.Seal/Open`                               | XSalsa20-Poly1305 encryption/tagging or decryption/verification; fixed 256-bit key and 192-bit nonce sizes |
 | `crypto.Signer.Public`, `crypto.Decrypter.Public`         | Public-key access; runtime algorithm and key size remain unknown    |
 | `ecdh.PrivateKey.PublicKey`, `ssh.CryptoPublicKey` method | Public-key access; no fabricated key bytes or size                  |
+| `ecdsa.PrivateKey.Public`, `mldsa.PrivateKey.PublicKey`   | Public-key access with known API family; material and runtime parameters remain unknown |
+| `mldsa.PublicKey.Parameters`, `mldsa.Parameters.String`   | Metadata access/formatting; no new asset |
 | `ssh.FingerprintSHA256`                                  | SHA-256 digest for fingerprinting, not an SSH signature algorithm    |
 | `ssh.MarshalAuthorizedKey`                               | Public-key serialization; no key material exported                  |
 | `rsa.PrivateKey.Validate`                                | Structural private-key check; no validity or compliance verdict     |
 | `x509.CertificateRequest.CheckSignature`                 | CSR self-signature verification; no assumed algorithm or outcome    |
+| `x509.Certificate.CheckSignatureFrom`                    | Certificate signature verification against a supplied issuer; no assumed algorithm or complete trust chain |
+| `x509.Certificate.Verify`                                | Configured certificate-chain validation; no success, trust, or revocation-checking claim |
+| `x509.Certificate.VerifyHostname`                        | Hostname matching against certificate metadata; no new cryptographic asset |
 | `x509.Certificate.Equal`                                 | Certificate identity comparison; no new asset                       |
-| `x509.CertPool.AppendCertsFromPEM`                        | Certificate import; actual certificates and trust remain unknown    |
+| `x509.CertPool.AppendCertsFromPEM/AddCert`                | Certificate import; actual certificates and trust remain unknown    |
 | `tls.Conn.Handshake`, `HandshakeContext`                 | Configured TLS handshake, not observed protocol/cipher negotiation   |
+| `tls.NewListener`                                       | Configured TLS listener; no negotiated version/cipher or deployment claim |
 | `elliptic.Curve.Params`, `CurveParams.Params`             | Metadata access; no new asset                                      |
 | `ecdh.PublicKey.Curve`, `ssh.PublicKey.Type`              | Metadata access; no new asset                                      |
 | `x509.SignatureAlgorithm.String`, `pkix.Name.String`      | Formatting only; no new asset                                      |
 | `tls.ClientAuthType.String`, `tls.CipherSuiteName`        | Formatting only; no new asset                                      |
+| `tls.Config.Clone`, `tls.Conn.Close`, `tls.CurveID.String` | Configuration copying, connection cleanup, and formatting; no new asset |
+| `tls.CipherSuites/InsecureCipherSuites`                   | Capability listings, not configured or negotiated cipher suites |
 | `tls.Conn.ConnectionState`                              | State access; no runtime observation made by the source scanner     |
 | `x509.NewCertPool`, `x509.CertPool.Clone`                 | Empty-container allocation or copy; no new certificate discovered   |
 | `ssh.Conn.Close`                                        | Connection cleanup; no new asset                                   |
@@ -272,6 +300,28 @@ do not create fictitious cryptographic assets.
 | `ssh.Channel.Close`, `ssh.Session.Wait`                  | Channel cleanup and command-wait lifecycle; no new asset             |
 | `ssh.Session.StdinPipe/StdoutPipe/StderrPipe`             | Stream accessors; no new asset                                     |
 | `rsa.PublicKey.Equal`                                   | Public-key identity comparison; no new asset                        |
+| `rsa.PublicKey.Size`, `ecdsa.PublicKey.Equal`, `ed25519.PublicKey.Equal`, `mldsa.PublicKey.Equal` | Key metadata/identity checks; no new asset |
+| `subtle.ConstantTimeCompare`                            | Constant-time comparison; not a standalone cryptographic asset |
+
+The exact `cryptobyte.NewBuilder`, `Builder.AddUint16LengthPrefixed`,
+`Builder.AddBytes`, `Builder.AddUint32`, `Builder.Bytes`, and
+`String.ReadUint16LengthPrefixed` APIs are byte-encoding/decoding helpers, not
+cryptographic operations. This is not blanket suppression of the package or
+of similarly named methods on other types.
+
+Constructor tracking is bounded to visible calls, aliases/interface wrapping,
+first-result extraction, and agreeing branches. It does not execute factories
+or trace arbitrary wrappers, fields, or runtime mutations. For example, a
+visible `NewGCM` can establish an AEAD operation's mode without assuming AES,
+and a visible `NewCBCDecrypter` establishes decryption rather than encryption.
+Conflicting constructors and opaque interfaces remain unresolved.
+
+ML-DSA selectors supply the native `ML-DSA` family, parameter-set identifiers
+`44`, `65`, or `87`, and their registered OIDs. Those identifiers are not key
+lengths or inferred security scores. An unresolved `mldsa.GenerateKey` parameter
+still records key-generation intent without choosing a parameter set. NaCl
+secretbox sizes come from its fixed array-typed API; private bytes, nonce
+uniqueness, successful authentication, and operation success are not established.
 
 Static-analysis boundaries are documented here rather than repeated as generic
 scope boilerplate in every CBOM or scanned module. Unknown parameters remain
@@ -897,8 +947,9 @@ The CBOM header retains native generation time and scanner identity, plus only:
 - `ciphertrail:coverage-limitation`, when needed: concise qualifications such as
   rendering required, failed analysis, or analysis diagnostics being reported.
 
-It does not contain serialized collection payloads, omission counters, absolute
-input targets, build-context dumps, diagnostic lists, or generic scope prose.
+It does not contain serialized collection payloads, omission counters, input-target
+lists, build-context dumps, diagnostic lists, or generic scope prose. A primary
+component's native identity and evidence can include its own path or endpoint.
 Successful execution is not a claim of exhaustive coverage or secure cryptography.
 Both inventory modes use this same compact metadata contract.
 
@@ -908,12 +959,46 @@ revision and dirty-worktree marker for development builds. `dev` is used only
 when no more precise identity is available. CLI `version`, CBOM, and scan report
 use the same identity; parser/compiler versions are not target-runtime claims.
 
+### Document and primary-component identity
+
+Each generated CBOM has a fresh UUIDv4 `serialNumber` (`urn:uuid:...`) and document
+`version: 1`. Rescanning or changing output scope creates a new document, including
+for empty or incomplete inventories. Document identity is independent of stable
+component and occurrence references; it is not a content hash or the scanner's
+release version.
+
+Collectors identify actual primary software components rather than guessing a
+subject from names or dependency order. When all non-deduplicated inputs agree on
+one collected subject, that component is placed in `metadata.component`, not
+duplicated in `components`. Its original `bom-ref`, facts, evidence, and graph
+links are preserved. The subject remains identifiable in crypto-focused output
+even when no cryptographic assets were found.
+
+Supported subjects include a root Go module (or the sole selected module),
+a Python source project, an explicitly selected Go binary, a single image, or an
+observed TLS/SSH endpoint. Ordinary nested Go modules remain in the same inventory
+without replacing an identified root module. Multiple distinct subjects,
+workspaces without a unique main module, mixed Go/Python ownership roots, or
+additional inputs without an identified subject remain aggregate reports with no
+invented main component. Standalone material and configuration scans do not
+fabricate an application identity.
+
+Consumers must include `metadata.component` when indexing components or resolving
+dependency references. `--summary` and scan-report statistics account for it
+without treating a software subject as a cryptographic finding.
+
 ### Separate scan report
 
 The optional JSON artifact has `reportFormat: "CipherTrailScanReport"` and
 `reportVersion: 1`. It contains scanner identity/time, output scope/status,
 component statistics, and a `collections` array with per-input target, outcome,
 errors, diagnostics, coverage, and structured `details`.
+
+When a CBOM was generated, `bomLink` is a standard CycloneDX BOM-Link
+(`urn:cdx:<uuid>/<version>`) identifying that exact document. It shares the CBOM's
+generation timestamp and scanner identity. If CBOM encoding failed, no link is
+invented. A generated-but-unwritten CBOM can still be linked while `outputError`
+explicitly records the write failure.
 
 Metadata values are supplied as typed values by collectors. Arrays and objects,
 such as exclusions and Go build context, remain JSON arrays/objects; the report
@@ -992,7 +1077,7 @@ Certificate component hashes remain SHA-256 over the full DER certificate;
 private-key material and private-key digests are not exported.
 
 Stable component references and sorted relationships make reports comparable.
-Observation/report timestamps vary between runs. Collection success does not
+Document UUIDs and observation/report timestamps vary between runs. Collection success does not
 mean exhaustive discovery or a secure configuration.
 
 | Exit | Meaning                                                              |

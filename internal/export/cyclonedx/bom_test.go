@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -12,12 +13,123 @@ import (
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
 
+func TestEachCBOMHasFreshDocumentIdentity(t *testing.T) {
+	var result inventory.Result
+	result.Add(inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash),
+		inventory.Evidence{Kind: "configured", Location: "main.go", Line: 1}, "")
+	collections := []inventory.Collection{{Result: result}}
+	first := encodeForTest(t, collections, EncodeOptions{ToolVersion: "v0.1.0"})
+	second := encodeForTest(t, collections, EncodeOptions{ToolVersion: "v0.1.0"})
+	uuid := regexp.MustCompile(`^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !uuid.MatchString(first.SerialNumber) || !uuid.MatchString(second.SerialNumber) ||
+		first.SerialNumber == second.SerialNumber || first.Version != 1 || second.Version != 1 {
+		t.Fatalf("CBOMs lack distinct UUIDv4 document identities: %q, %q", first.SerialNumber, second.SerialNumber)
+	}
+	if !reflect.DeepEqual(first.Components, second.Components) || !reflect.DeepEqual(first.Dependencies, second.Dependencies) {
+		t.Fatal("document identity changed stable components, occurrences, or relationships")
+	}
+	if (*first.Metadata.Tools.Components)[0].Version != "v0.1.0" {
+		t.Fatal("document identity replaced the scanner release version")
+	}
+}
+
+func TestPrimarySubjectPreservesFactsAndGraph(t *testing.T) {
+	var result inventory.Result
+	root := result.Add(cdx.Component{Type: cdx.ComponentTypeLibrary, Name: "subject", Version: "2.3.4"},
+		inventory.Evidence{Kind: "present", Collector: "go", Location: "go.mod"}, "")
+	result.Subjects = []string{root}
+	asset := result.Add(inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash),
+		inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go", Line: 5}, root)
+	result.DependOn(asset, root)
+	unrelated := result.Add(cdx.Component{Type: cdx.ComponentTypeLibrary, Name: "unrelated"}, inventory.Evidence{}, "")
+	result.DependOn(root, unrelated)
+	before, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, full := range []bool{false, true} {
+		unmarked := result
+		unmarked.Subjects = nil
+		options := EncodeOptions{IncludeDependencies: full, ToolVersion: "v0.1.0"}
+		original := encodeForTest(t, []inventory.Collection{{Result: unmarked}}, options)
+		promoted := encodeForTest(t, []inventory.Collection{{Result: result}}, options)
+		subject := promoted.Metadata.Component
+		if subject == nil || subject.BOMRef != root || subject.Version != "2.3.4" {
+			t.Fatal("subject missing, reassigned, or confused with the scanner release")
+		}
+		for _, component := range *original.Components {
+			if component.BOMRef == root && !reflect.DeepEqual(component, *subject) {
+				t.Fatal("subject promotion changed collected facts or occurrences")
+			}
+		}
+		for _, component := range *promoted.Components {
+			if component.BOMRef == root {
+				t.Fatal("metadata subject was duplicated in components")
+			}
+		}
+		if !reflect.DeepEqual(original.Dependencies, promoted.Dependencies) ||
+			len(*promoted.Components)+1 != len(*original.Components) {
+			t.Fatal("subject promotion changed graph scope or component identity")
+		}
+		assertClosedGraph(t, promoted)
+	}
+	after, err := json.Marshal(result)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("export mutated collector-owned subject facts")
+	}
+}
+
+func TestPrimarySubjectRequiresAgreement(t *testing.T) {
+	collection := func(ref string) inventory.Collection {
+		var result inventory.Result
+		result.Add(cdx.Component{BOMRef: ref, Name: ref, Type: cdx.ComponentTypeApplication}, inventory.Evidence{}, "")
+		result.Subjects = []string{ref}
+		return inventory.Collection{Result: result}
+	}
+	for _, test := range []struct {
+		name        string
+		collections []inventory.Collection
+		subject     string
+	}{
+		{"single", []inventory.Collection{collection("first")}, "first"},
+		{"same-object", []inventory.Collection{collection("first"), collection("first")}, "first"},
+		{"distinct", []inventory.Collection{collection("first"), collection("second")}, ""},
+		{"unknown-input", []inventory.Collection{collection("first"), {}}, ""},
+		{"failed-input", []inventory.Collection{collection("first"), {Err: errors.New("unreadable input")}}, ""},
+		{"deduplicated", []inventory.Collection{collection("first"), {Result: inventory.Result{
+			Coverage: []inventory.Coverage{{Analyzer: "go", Status: "deduplicated"}, {Analyzer: "python", Status: "not-applicable"}},
+		}}}, "first"},
+		{"deduplicated-with-failure", []inventory.Collection{collection("first"), {Result: inventory.Result{
+			Coverage: []inventory.Coverage{{Analyzer: "go", Status: "deduplicated"}, {Analyzer: "python", Status: "failed"}},
+		}}}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bom := encodeForTest(t, test.collections, EncodeOptions{})
+			if test.subject == "" {
+				if bom.Metadata.Component != nil {
+					t.Fatal("ambiguous inputs were assigned a subject")
+				}
+			} else if bom.Metadata.Component == nil || bom.Metadata.Component.BOMRef != test.subject {
+				t.Fatal("known subject was pruned in an inventory without cryptographic findings")
+			}
+			assertClosedGraph(t, bom)
+		})
+	}
+	missing := collection("first")
+	missing.Result.Subjects = []string{"missing"}
+	if _, err := Encode([]inventory.Collection{missing}); err == nil {
+		t.Fatal("dangling subject reference was silently ignored")
+	}
+}
+
 func TestKnownHashFactsUseNativeFields(t *testing.T) {
 	var result inventory.Result
 	for _, test := range []struct {
 		name, family, parameter, oid string
 	}{
+		{"MD4", "MD4", "128", ""},
 		{"MD5", "MD5", "128", "1.2.840.113549.2.5"},
+		{"RIPEMD-160", "RIPEMD", "160", ""},
 		{"SHA-1", "SHA-1", "160", "1.3.14.3.2.26"},
 		{"SHA-224", "SHA-2", "224", "2.16.840.1.101.3.4.2.4"},
 		{"SHA-256", "SHA-2", "256", "2.16.840.1.101.3.4.2.1"},
@@ -950,7 +1062,15 @@ func encodeForTest(t *testing.T, collections []inventory.Collection, options Enc
 func assertClosedGraph(t *testing.T, bom cdx.BOM) {
 	t.Helper()
 	refs := map[string]bool{}
-	for _, component := range *bom.Components {
+	var components []cdx.Component
+	if bom.Metadata != nil && bom.Metadata.Component != nil {
+		components = append(components, *bom.Metadata.Component)
+	}
+	components = append(components, *bom.Components...)
+	for _, component := range components {
+		if refs[component.BOMRef] {
+			t.Errorf("duplicate component reference %s", component.BOMRef)
+		}
 		refs[component.BOMRef] = true
 	}
 	for _, dependency := range *bom.Dependencies {
@@ -963,7 +1083,7 @@ func assertClosedGraph(t *testing.T, bom cdx.BOM) {
 			}
 		}
 	}
-	for _, component := range *bom.Components {
+	for _, component := range components {
 		for _, ref := range cryptoReferences(&component) {
 			if !refs[ref] {
 				t.Errorf("dangling crypto reference %s", ref)

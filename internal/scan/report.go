@@ -19,6 +19,7 @@ type Report struct {
 	ReportFormat  string             `json:"reportFormat"`
 	ReportVersion int                `json:"reportVersion"`
 	Timestamp     string             `json:"timestamp"`
+	BOMLink       string             `json:"bomLink,omitempty"`
 	Tool          ReportTool         `json:"tool"`
 	Status        string             `json:"status"`
 	OutputScope   string             `json:"outputScope"`
@@ -108,12 +109,23 @@ func EncodeReport(collections []inventory.Collection, options ReportOptions) ([]
 		if err := json.Unmarshal(options.CBOM, &bom); err != nil {
 			return nil, fmt.Errorf("read generated CBOM statistics: %w", err)
 		}
+		link, err := cdx.NewBOMLink(bom.SerialNumber, bom.Version, nil)
+		if err != nil {
+			return nil, fmt.Errorf("read generated CBOM identity: %w", err)
+		}
+		report.BOMLink = link.String()
 		if bom.Metadata != nil && bom.Metadata.Timestamp != "" {
 			report.Timestamp = bom.Metadata.Timestamp
 		}
 		exported, crypto := 0, 0
+		if bom.Metadata != nil && bom.Metadata.Component != nil {
+			exported++
+			if bom.Metadata.Component.Type == cdx.ComponentTypeCryptographicAsset {
+				crypto++
+			}
+		}
 		if bom.Components != nil {
-			exported = len(*bom.Components)
+			exported += len(*bom.Components)
 			for _, component := range *bom.Components {
 				if component.Type == cdx.ComponentTypeCryptographicAsset {
 					crypto++

@@ -1,6 +1,7 @@
 package goscan
 
 import (
+	"crypto"
 	"fmt"
 	"strings"
 
@@ -11,17 +12,35 @@ import (
 )
 
 var hashNames = map[string]map[string]string{
-	"md5":     {"New": "MD5", "Sum": "MD5"},
-	"sha1":    {"New": "SHA-1", "Sum": "SHA-1"},
-	"sha256":  {"New": "SHA-256", "Sum256": "SHA-256", "New224": "SHA-224", "Sum224": "SHA-224"},
-	"sha512":  {"New": "SHA-512", "Sum512": "SHA-512", "New384": "SHA-384", "Sum384": "SHA-384", "New512_224": "SHA-512/224", "Sum512_224": "SHA-512/224", "New512_256": "SHA-512/256", "Sum512_256": "SHA-512/256"},
-	"sha3":    {"New224": "SHA3-224", "Sum224": "SHA3-224", "New256": "SHA3-256", "Sum256": "SHA3-256", "New384": "SHA3-384", "Sum384": "SHA3-384", "New512": "SHA3-512", "Sum512": "SHA3-512", "NewSHAKE128": "SHAKE128", "NewSHAKE256": "SHAKE256", "NewShake128": "SHAKE128", "NewShake256": "SHAKE256"},
-	"blake2b": {"New256": "BLAKE2b-256", "Sum256": "BLAKE2b-256", "New384": "BLAKE2b-384", "Sum384": "BLAKE2b-384", "New512": "BLAKE2b-512", "Sum512": "BLAKE2b-512"},
-	"blake2s": {"New256": "BLAKE2s-256", "Sum256": "BLAKE2s-256", "New128": "BLAKE2s-128"},
+	"md4":       {"New": "MD4"},
+	"md5":       {"New": "MD5", "Sum": "MD5"},
+	"ripemd160": {"New": "RIPEMD-160"},
+	"sha1":      {"New": "SHA-1", "Sum": "SHA-1"},
+	"sha256":    {"New": "SHA-256", "Sum256": "SHA-256", "New224": "SHA-224", "Sum224": "SHA-224"},
+	"sha512":    {"New": "SHA-512", "Sum512": "SHA-512", "New384": "SHA-384", "Sum384": "SHA-384", "New512_224": "SHA-512/224", "Sum512_224": "SHA-512/224", "New512_256": "SHA-512/256", "Sum512_256": "SHA-512/256"},
+	"sha3":      {"New224": "SHA3-224", "Sum224": "SHA3-224", "New256": "SHA3-256", "Sum256": "SHA3-256", "New384": "SHA3-384", "Sum384": "SHA3-384", "New512": "SHA3-512", "Sum512": "SHA3-512", "NewSHAKE128": "SHAKE128", "NewSHAKE256": "SHAKE256", "NewShake128": "SHAKE128", "NewShake256": "SHAKE256"},
+	"blake2b":   {"New256": "BLAKE2b-256", "Sum256": "BLAKE2b-256", "New384": "BLAKE2b-384", "Sum384": "BLAKE2b-384", "New512": "BLAKE2b-512", "Sum512": "BLAKE2b-512"},
+	"blake2s":   {"New256": "BLAKE2s-256", "Sum256": "BLAKE2s-256", "New128": "BLAKE2s-128"},
 }
 
-// These exact APIs read metadata or manage containers/connections without selecting
-// or executing cryptography. Other methods, even with the same name, remain gaps.
+var hashIdentifiers = map[int64]string{
+	int64(crypto.MD4): "MD4", int64(crypto.MD5): "MD5", int64(crypto.SHA1): "SHA-1",
+	int64(crypto.SHA224): "SHA-224", int64(crypto.SHA256): "SHA-256", int64(crypto.SHA384): "SHA-384", int64(crypto.SHA512): "SHA-512",
+	int64(crypto.RIPEMD160): "RIPEMD-160",
+	int64(crypto.SHA3_224):  "SHA3-224", int64(crypto.SHA3_256): "SHA3-256", int64(crypto.SHA3_384): "SHA3-384", int64(crypto.SHA3_512): "SHA3-512",
+	int64(crypto.SHA512_224): "SHA-512/224", int64(crypto.SHA512_256): "SHA-512/256",
+	int64(crypto.BLAKE2s_256): "BLAKE2s-256", int64(crypto.BLAKE2b_256): "BLAKE2b-256",
+	int64(crypto.BLAKE2b_384): "BLAKE2b-384", int64(crypto.BLAKE2b_512): "BLAKE2b-512",
+}
+
+var mldsaParameterSets = map[apiIdentity]struct{ parameter, oid string }{
+	{"crypto/mldsa", "", "MLDSA44"}: {"44", "2.16.840.1.101.3.4.3.17"},
+	{"crypto/mldsa", "", "MLDSA65"}: {"65", "2.16.840.1.101.3.4.3.18"},
+	{"crypto/mldsa", "", "MLDSA87"}: {"87", "2.16.840.1.101.3.4.3.19"},
+}
+
+// These exact metadata, encoding, comparison, and lifecycle APIs do not establish
+// a cryptographic asset. Other methods, even with the same name, remain gaps.
 func nonAssetAPI(api apiIdentity) bool {
 	switch api {
 	case apiIdentity{"crypto/elliptic", "Curve", "Params"},
@@ -42,7 +61,28 @@ func nonAssetAPI(api apiIdentity) bool {
 		apiIdentity{"golang.org/x/crypto/ssh", "Session", "StdinPipe"},
 		apiIdentity{"golang.org/x/crypto/ssh", "Session", "StdoutPipe"},
 		apiIdentity{"golang.org/x/crypto/ssh", "Session", "StderrPipe"},
-		apiIdentity{"crypto/tls", "ClientAuthType", "String"}:
+		apiIdentity{"crypto/tls", "ClientAuthType", "String"},
+		apiIdentity{"crypto/cipher", "AEAD", "NonceSize"},
+		apiIdentity{"crypto/cipher", "AEAD", "Overhead"},
+		apiIdentity{"crypto/rsa", "PublicKey", "Size"},
+		apiIdentity{"crypto/mldsa", "PublicKey", "Parameters"},
+		apiIdentity{"crypto/mldsa", "Parameters", "String"},
+		apiIdentity{"crypto/ed25519", "PublicKey", "Equal"},
+		apiIdentity{"crypto/ecdsa", "PublicKey", "Equal"},
+		apiIdentity{"crypto/mldsa", "PublicKey", "Equal"},
+		apiIdentity{"crypto/subtle", "", "ConstantTimeCompare"},
+		apiIdentity{"crypto/x509", "Certificate", "VerifyHostname"},
+		apiIdentity{"crypto/tls", "Config", "Clone"},
+		apiIdentity{"crypto/tls", "Conn", "Close"},
+		apiIdentity{"crypto/tls", "CurveID", "String"},
+		apiIdentity{"crypto/tls", "", "CipherSuites"},
+		apiIdentity{"crypto/tls", "", "InsecureCipherSuites"},
+		apiIdentity{"golang.org/x/crypto/cryptobyte", "", "NewBuilder"},
+		apiIdentity{"golang.org/x/crypto/cryptobyte", "Builder", "AddUint16LengthPrefixed"},
+		apiIdentity{"golang.org/x/crypto/cryptobyte", "Builder", "AddBytes"},
+		apiIdentity{"golang.org/x/crypto/cryptobyte", "Builder", "AddUint32"},
+		apiIdentity{"golang.org/x/crypto/cryptobyte", "Builder", "Bytes"},
+		apiIdentity{"golang.org/x/crypto/cryptobyte", "String", "ReadUint16LengthPrefixed"}:
 		return true
 	}
 	return false
@@ -50,29 +90,98 @@ func nonAssetAPI(api apiIdentity) bool {
 
 func recognize(path, name string, call *ssa.CallCommon, values *values, evidence *inventory.Evidence) (cdx.Component, bool) {
 	api := calledAPI(call)
+	arg := func(index int) ssa.Value {
+		if index >= 0 && index < len(call.Args) {
+			return call.Args[index]
+		}
+		return nil
+	}
 	switch api {
 	case apiIdentity{"crypto", "Signer", "Public"},
 		apiIdentity{"crypto", "Decrypter", "Public"},
 		apiIdentity{"crypto/ecdh", "PrivateKey", "PublicKey"},
+		apiIdentity{"crypto/ecdsa", "PrivateKey", "Public"},
+		apiIdentity{"crypto/mldsa", "PrivateKey", "PublicKey"},
 		apiIdentity{"golang.org/x/crypto/ssh", "CryptoPublicKey", "CryptoPublicKey"}:
 		c := keyOperation("Public key access")
-		if api.path == "crypto/ecdh" {
+		switch api.path {
+		case "crypto/ecdh":
 			inventory.Property(&c, "key-algorithm", "ECDH")
+		case "crypto/ecdsa":
+			inventory.Property(&c, "key-algorithm", "ECDSA")
+		case "crypto/mldsa":
+			inventory.Property(&c, "key-algorithm", "ML-DSA")
 		}
 		return c, true
-	case apiIdentity{"crypto/x509", "CertPool", "AppendCertsFromPEM"}:
+	case apiIdentity{"crypto/x509", "CertPool", "AppendCertsFromPEM"},
+		apiIdentity{"crypto/x509", "CertPool", "AddCert"}:
 		return operation("X.509 certificate import", cdx.CryptoAssetTypeCertificate), true
+	case apiIdentity{"crypto/x509", "Certificate", "Verify"}:
+		c := inventory.ConfiguredCertificate("X.509 certificate verification", "", nil)
+		inventory.Property(&c, "scope", "configured chain validation request; trust, revocation checking, and verification success are not established")
+		return c, true
 	case apiIdentity{"crypto/rsa", "PrivateKey", "Validate"}:
 		c := keyOperation("Private key validation")
 		inventory.Property(&c, "key-algorithm", "RSA")
 		inventory.Property(&c, "scope", "structural key check; success, signing, and encryption are not inferred")
 		return c, true
-	case apiIdentity{"crypto/x509", "CertificateRequest", "CheckSignature"}:
-		c := inventory.Algorithm("CSR signature verification", cdx.CryptoPrimitiveSignature)
+	case apiIdentity{"crypto/x509", "CertificateRequest", "CheckSignature"},
+		apiIdentity{"crypto/x509", "Certificate", "CheckSignatureFrom"}:
+		label, scope := "CSR signature verification", "PKCS#10 self-signature check; validity, approval, and certificate issuance are not established"
+		if api.receiver == "Certificate" {
+			label, scope = "X.509 certificate signature verification", "certificate signature check against a supplied issuer; a complete trust chain and verification success are not established"
+		}
+		c := inventory.Algorithm(label, cdx.CryptoPrimitiveSignature)
 		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionVerify}
 		evidence.Unresolved = append(evidence.Unresolved, "algorithm")
-		inventory.Property(&c, "scope", "PKCS#10 self-signature check; validity, approval, and certificate issuance are not established")
+		inventory.Property(&c, "scope", scope)
 		return c, true
+	case apiIdentity{"crypto", "Hash", "New"}:
+		if identifier, known := values.integer(callReceiver(call)); known {
+			if c, matched := inventory.HashAlgorithm(hashIdentifiers[identifier]); matched {
+				return c, true
+			}
+		}
+		c := inventory.Algorithm("Hash configuration", cdx.CryptoPrimitiveHash)
+		c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionDigest}
+		evidence.Unresolved = append(evidence.Unresolved, "algorithm")
+		return c, true
+	case apiIdentity{"crypto/mldsa", "", "MLDSA44"},
+		apiIdentity{"crypto/mldsa", "", "MLDSA65"},
+		apiIdentity{"crypto/mldsa", "", "MLDSA87"},
+		apiIdentity{"crypto/mldsa", "", "GenerateKey"}:
+		c := inventory.Algorithm("ML-DSA", cdx.CryptoPrimitiveSignature)
+		a := c.CryptoProperties.AlgorithmProperties
+		a.AlgorithmFamily = "ML-DSA"
+		selector := api
+		if api.name == "GenerateKey" {
+			a.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionKeygen}
+			selector = constructorAPI(arg(0))
+		}
+		if parameters, known := mldsaParameterSets[selector]; known {
+			a.ParameterSetIdentifier, c.CryptoProperties.OID = parameters.parameter, parameters.oid
+		} else {
+			evidence.Unresolved = append(evidence.Unresolved, "parameter-set")
+		}
+		return c, true
+	case apiIdentity{"crypto/cipher", "AEAD", "Seal"},
+		apiIdentity{"crypto/cipher", "AEAD", "Open"},
+		apiIdentity{"crypto/cipher", "BlockMode", "CryptBlocks"}:
+		return cipherOperation(api, call, evidence), true
+	case apiIdentity{"golang.org/x/crypto/nacl/secretbox", "", "Seal"},
+		apiIdentity{"golang.org/x/crypto/nacl/secretbox", "", "Open"}:
+		c := inventory.Algorithm("XSalsa20-Poly1305", cdx.CryptoPrimitiveAE)
+		a := c.CryptoProperties.AlgorithmProperties
+		a.AlgorithmFamily, a.ParameterSetIdentifier = "Salsa20", "256"
+		functions := []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionTag}
+		if api.name == "Open" {
+			functions = []cdx.CryptoFunction{cdx.CryptoFunctionDecrypt, cdx.CryptoFunctionVerify}
+		}
+		a.CryptoFunctions = &functions
+		inventory.Property(&c, "nonce-size-bits", "192")
+		return c, true
+	case apiIdentity{"crypto/tls", "", "NewListener"}:
+		return protocol("TLS", cdx.CryptoProtocolTypeTLS), true
 	case apiIdentity{"golang.org/x/crypto/ssh", "", "MarshalAuthorizedKey"}:
 		return keyOperation("Public key serialization"), true
 	case apiIdentity{"golang.org/x/crypto/ssh", "Channel", "Read"},
@@ -101,12 +210,6 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 	family := path[strings.LastIndex(path, "/")+1:]
 	if path != "crypto/"+family && path != "golang.org/x/crypto/"+family {
 		return cdx.Component{}, false
-	}
-	arg := func(index int) ssa.Value {
-		if index >= 0 && index < len(call.Args) {
-			return call.Args[index]
-		}
-		return nil
 	}
 	parameter := func(c *cdx.Component, label string, index int, byteLength bool) {
 		value, known := values.integer(arg(index))
@@ -410,6 +513,51 @@ func recognize(path, name string, call *ssa.CallCommon, values *values, evidence
 		}
 	}
 	return cdx.Component{}, false
+}
+
+func callReceiver(call *ssa.CallCommon) ssa.Value {
+	if call.IsInvoke() {
+		return call.Value
+	}
+	if len(call.Args) > 0 {
+		return call.Args[0]
+	}
+	return nil
+}
+
+func cipherOperation(api apiIdentity, call *ssa.CallCommon, evidence *inventory.Evidence) cdx.Component {
+	constructor := constructorAPI(callReceiver(call))
+	evidence.Unresolved = append(evidence.Unresolved, "underlying-algorithm")
+	if api.receiver == "BlockMode" {
+		c := inventory.Algorithm("Block cipher operation", cdx.CryptoPrimitiveBlockCipher)
+		a := c.CryptoProperties.AlgorithmProperties
+		switch constructor {
+		case apiIdentity{"crypto/cipher", "", "NewCBCEncrypter"}:
+			a.Mode, a.CryptoFunctions = cdx.CryptoAlgorithmModeCBC, &[]cdx.CryptoFunction{cdx.CryptoFunctionEncrypt}
+		case apiIdentity{"crypto/cipher", "", "NewCBCDecrypter"}:
+			a.Mode, a.CryptoFunctions = cdx.CryptoAlgorithmModeCBC, &[]cdx.CryptoFunction{cdx.CryptoFunctionDecrypt}
+		default:
+			evidence.Unresolved = append(evidence.Unresolved, "mode", "crypto-function")
+		}
+		return c
+	}
+	label := "AEAD encryption"
+	functions := []cdx.CryptoFunction{cdx.CryptoFunctionEncrypt, cdx.CryptoFunctionTag}
+	if api.name == "Open" {
+		label, functions = "AEAD decryption", []cdx.CryptoFunction{cdx.CryptoFunctionDecrypt, cdx.CryptoFunctionVerify}
+	}
+	c := inventory.Algorithm(label, cdx.CryptoPrimitiveAE)
+	c.CryptoProperties.AlgorithmProperties.CryptoFunctions = &functions
+	switch constructor {
+	case apiIdentity{"crypto/cipher", "", "NewGCM"},
+		apiIdentity{"crypto/cipher", "", "NewGCMWithNonceSize"},
+		apiIdentity{"crypto/cipher", "", "NewGCMWithTagSize"},
+		apiIdentity{"crypto/cipher", "", "NewGCMWithRandomNonce"}:
+		c.CryptoProperties.AlgorithmProperties.Mode = cdx.CryptoAlgorithmModeGCM
+	default:
+		evidence.Unresolved = append(evidence.Unresolved, "mode")
+	}
+	return c
 }
 
 func addConfiguredParameters(component *cdx.Component, evidence *inventory.Evidence, call *ssa.CallCommon, values *values) {

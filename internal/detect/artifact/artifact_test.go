@@ -3,6 +3,7 @@ package artifact
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
+	cdx "github.com/CycloneDX/cyclonedx-go"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
@@ -74,6 +76,10 @@ func TestGoBinaryMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := (detect.Collector{Source: input.Local{Path: path}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -85,8 +91,35 @@ func TestGoBinaryMetadata(t *testing.T) {
 	if !found {
 		t.Fatal("Go build metadata absent")
 	}
-	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
 		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Subjects) != 1 || bom.Metadata.Component == nil ||
+		bom.Metadata.Component.BOMRef != result.Subjects[0] || bom.Metadata.Component.Type != cdx.ComponentTypeApplication ||
+		len(*bom.Components) != 0 {
+		t.Fatal("explicit binary lost its subject or its metadata was mistaken for cryptographic use")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []bool{false, true} {
+		file := input.NewFile(path, int64(len(contents)), bytes.NewReader(contents))
+		file.Explicit = explicit
+		file.Evidence = inventory.Evidence{Kind: "present", Collector: "file", Location: path}
+		streamed, found, err := (Detector{}).Detect(context.Background(), file)
+		if err != nil || !found {
+			t.Fatalf("streamed binary metadata failed: %v", err)
+		}
+		if explicit && (len(streamed.Subjects) != 1 || streamed.Subjects[0] != result.Subjects[0]) ||
+			!explicit && len(streamed.Subjects) != 0 {
+			t.Fatal("binary subject depends on reader type or was inferred for an incidental file")
+		}
 	}
 	reader, err := os.Open(path)
 	if err != nil {
@@ -136,8 +169,17 @@ func TestImageWhiteoutsAndOCILayout(t *testing.T) {
 		if !found {
 			t.Fatal("effective image asset missing")
 		}
-		if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+		data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+		if err != nil {
 			t.Fatal(err)
+		}
+		var bom cdx.BOM
+		if err := json.Unmarshal(data, &bom); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Subjects) != 1 || bom.Metadata.Component == nil ||
+			bom.Metadata.Component.BOMRef != result.Subjects[0] || bom.Metadata.Component.Type != cdx.ComponentTypeContainer {
+			t.Fatal("single-image archive/layout lost its primary container")
 		}
 	}
 }
@@ -154,5 +196,50 @@ func TestImageRejectsTraversal(t *testing.T) {
 	}
 	if _, err := (detect.Collector{Source: input.Image{Path: archive}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background()); err == nil {
 		t.Fatal("unsafe image path accepted")
+	}
+}
+
+func TestMultiImageLayoutHasNoInventedPrimarySubject(t *testing.T) {
+	_, _, certificate, _ := testutil.Identity(t)
+	path := t.TempDir()
+	oci, err := layout.Write(path, empty.Index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range []string{"first.pem", "second.pem"} {
+		image, err := mutate.AppendLayers(empty.Image, testutil.Layer(t, map[string][]byte{filename: certificate}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := oci.AppendImage(image); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := (detect.Collector{Source: input.Image{Path: path}, Detectors: []detect.Detector{Detector{}}}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bom cdx.BOM
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Subjects) != 2 || bom.Metadata.Component != nil {
+		t.Fatal("multi-image input was mislabeled as one primary container")
+	}
+	containers, certificates := 0, 0
+	for _, component := range *bom.Components {
+		if component.Type == cdx.ComponentTypeContainer {
+			containers++
+		}
+		if component.CryptoProperties != nil && component.CryptoProperties.AssetType == cdx.CryptoAssetTypeCertificate {
+			certificates++
+		}
+	}
+	if containers != 2 || certificates != 1 {
+		t.Fatalf("subject tracking changed consolidation: containers=%d certificates=%d", containers, certificates)
 	}
 }
