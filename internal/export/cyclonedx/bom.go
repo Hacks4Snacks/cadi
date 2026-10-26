@@ -39,9 +39,10 @@ type parameterValue struct {
 	Symbol   string `json:"symbol,omitempty"`
 }
 
-// EncodeOptions controls inventory scope, not cryptographic policy.
+// EncodeOptions controls inventory scope and scanner identity, not cryptographic policy.
 type EncodeOptions struct {
 	IncludeDependencies bool
+	ToolVersion         string
 }
 
 // Encode constructs a validated, crypto-focused CycloneDX 1.7 document.
@@ -61,32 +62,26 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 		if err := collection.Result.Err(); err != nil {
 			return nil, err
 		}
-		status := "succeeded"
 		if collection.Err != nil {
 			incomplete = true
-			status = "incomplete"
 		}
-		outcome := struct {
-			Collector   string                 `json:"collector"`
-			Target      string                 `json:"target"`
-			Status      string                 `json:"status"`
-			Error       string                 `json:"error,omitempty"`
-			Properties  []cdx.Property         `json:"properties,omitempty"`
-			Diagnostics []inventory.Diagnostic `json:"diagnostics,omitempty"`
-			Coverage    []inventory.Coverage   `json:"coverage,omitempty"`
-		}{Collector: collection.Collector, Target: collection.Target, Status: status,
-			Properties: slices.Clone(collection.Result.Properties), Diagnostics: collection.Result.Diagnostics,
-			Coverage: collection.Result.Coverage}
-		slices.SortFunc(outcome.Properties, compareProperty)
-		outcome.Properties = slices.Compact(outcome.Properties)
-		if collection.Err != nil {
-			outcome.Error = collection.Err.Error()
+		if len(collection.Result.Diagnostics) > 0 {
+			metadata = append(metadata, cdx.Property{Name: "ciphertrail:coverage-limitation", Value: "analysis diagnostics were reported"})
 		}
-		encoded, err := json.Marshal(outcome)
-		if err != nil {
-			return nil, fmt.Errorf("encode collection outcome: %w", err)
+		for _, coverage := range collection.Result.Coverage {
+			var limitation string
+			switch {
+			case coverage.Status == "failed":
+				limitation = coverage.Analyzer + ": analysis failed"
+			case coverage.Status == "needs-rendering":
+				limitation = coverage.Analyzer + ": rendered inputs required"
+			case coverage.Skipped > 0 && coverage.Reason != "":
+				limitation = coverage.Analyzer + ": some inputs require preparation"
+			}
+			if limitation != "" {
+				metadata = append(metadata, cdx.Property{Name: "ciphertrail:coverage-limitation", Value: limitation})
+			}
 		}
-		metadata = append(metadata, cdx.Property{Name: "ciphertrail:collection", Value: string(encoded)})
 		for _, entry := range collection.Result.Entries {
 			ref := entry.Component.BOMRef
 			if ref == "" {
@@ -167,16 +162,12 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 			}
 		}
 	}
-	before := len(components)
 	scope := "full-dependencies"
 	if !options.IncludeDependencies {
 		scope = "crypto-focused"
 		focusGraph(components, edges, owners)
 	}
-	metadata = append(metadata,
-		cdx.Property{Name: "ciphertrail:output-scope", Value: scope},
-		cdx.Property{Name: "ciphertrail:omitted-components", Value: decimal(before - len(components))},
-	)
+	metadata = append(metadata, cdx.Property{Name: "ciphertrail:output-scope", Value: scope})
 	ordered := make([]cdx.Component, 0, len(components))
 	for _, component := range components {
 		ordered = append(ordered, *component)
@@ -192,12 +183,13 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 	}
 	slices.SortFunc(ordered, func(a, b cdx.Component) int { return compareText(a.BOMRef, b.BOMRef) })
 	slices.SortFunc(dependencies, func(a, b cdx.Dependency) int { return compareText(a.Ref, b.Ref) })
-	slices.SortFunc(metadata, compareProperty)
 	status := "succeeded"
 	if incomplete {
 		status = "incomplete"
 	}
 	metadata = append(metadata, cdx.Property{Name: "ciphertrail:collection-status", Value: status})
+	slices.SortFunc(metadata, compareProperty)
+	metadata = slices.Compact(metadata)
 	bom := cdx.NewBOM()
 	bom.SpecVersion = cdx.SpecVersion1_7
 	bom.JSONSchema = schemaURL
@@ -207,7 +199,7 @@ func EncodeWithOptions(collections []inventory.Collection, options EncodeOptions
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		Properties: &metadata,
 		Tools: &cdx.ToolsChoice{Components: &[]cdx.Component{
-			{Type: "application", Name: "ciphertrail", Version: "dev"},
+			{Type: "application", Name: "ciphertrail", Version: options.ToolVersion},
 		}},
 	}
 	var buffer bytes.Buffer

@@ -103,6 +103,8 @@ func TestPythonSelectionsShareMutationFacts(t *testing.T) {
 			} {
 				t.Run(selection.name, func(t *testing.T) {
 					args := append([]string{"scan", "--analyzers", "python", "--offline"}, selection.paths...)
+					reportPath := filepath.Join(t.TempDir(), "scan.json")
+					args = append(args, "--scan-report", reportPath)
 					var stdout, stderr bytes.Buffer
 					if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
 						t.Fatalf("scan failed: %d %s", code, stderr.String())
@@ -139,18 +141,7 @@ func TestPythonSelectionsShareMutationFacts(t *testing.T) {
 					}
 					files, diagnostics := 0, 0
 					targets := map[string]bool{}
-					for _, property := range *bom.Metadata.Properties {
-						if property.Name != "ciphertrail:collection" {
-							continue
-						}
-						var collection struct {
-							Target      string
-							Coverage    []inventory.Coverage
-							Diagnostics []inventory.Diagnostic
-						}
-						if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
-							t.Fatal(err)
-						}
+					for _, collection := range readScanReport(t, reportPath).Collections {
 						targets[collection.Target] = true
 						diagnostics += len(collection.Diagnostics)
 						for _, coverage := range collection.Coverage {
@@ -261,9 +252,10 @@ func TestPythonSharedAnalysisPreservesPartialFailures(t *testing.T) {
 	root := t.TempDir()
 	writeRepositoryFile(t, root, "app.py", "import hashlib\nhashlib.sha256(b'PRIVATE_INPUT')\n")
 	writeRepositoryFile(t, root, "broken.py", "def broken(\n")
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"scan", filepath.Join(root, "app.py"), filepath.Join(root, "broken.py"),
-		"--analyzers", "python", "--offline", "--summary"}, &stdout, &stderr)
+		"--analyzers", "python", "--offline", "--summary", "--scan-report", reportPath}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "INCOMPLETE") {
 		t.Fatalf("shared analysis hid a parser failure: %d %s", code, stderr.String())
 	}
@@ -277,17 +269,7 @@ func TestPythonSharedAnalysisPreservesPartialFailures(t *testing.T) {
 			hashes++
 		}
 	}
-	for _, property := range *bom.Metadata.Properties {
-		if property.Name != "ciphertrail:collection" {
-			continue
-		}
-		var collection struct {
-			Status   string
-			Coverage []inventory.Coverage
-		}
-		if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
-			t.Fatal(err)
-		}
+	for _, collection := range readScanReport(t, reportPath).Collections {
 		for _, coverage := range collection.Coverage {
 			if coverage.Analyzer == "python" {
 				files += coverage.Files
@@ -326,10 +308,15 @@ func TestPythonSharedScopeAndVirtualEnvironments(t *testing.T) {
 	} {
 		writeRepositoryFile(t, root, path, "import hashlib\nhashlib.md5(b'out-of-scope')\n")
 	}
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", root, "--analyzers", "python", "--exclude", "excluded"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", root, "--analyzers", "python", "--exclude", "excluded", "--scan-report", reportPath}, &stdout, &stderr)
+	reportData, err := json.Marshal(readScanReport(t, reportPath))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if code != 0 || !strings.Contains(stdout.String(), "SHA-256") || strings.Contains(stdout.String(), `"name": "MD5"`) ||
-		!strings.Contains(stderr.String(), "files=1") || !strings.Contains(stdout.String(), "python-virtual-environment") {
+		!strings.Contains(stderr.String(), "files=1") || !strings.Contains(string(reportData), "python-virtual-environment") {
 		t.Fatalf("Python scope was not honored: %d %s", code, stderr.String())
 	}
 }

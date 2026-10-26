@@ -166,6 +166,111 @@ func Generate() { _, _ = rsa.GenerateKey(rand.Reader, 4096) }
 	}
 }
 
+func TestGoKnownNativeAlgorithmFacts(t *testing.T) {
+	directory := fixture(t, `package example
+import (
+ "crypto"
+ "crypto/cipher"
+ "crypto/ecdh"
+ "crypto/ecdsa"
+ "crypto/ed25519"
+ "crypto/mlkem"
+ "crypto/rand"
+ "crypto/rsa"
+ "crypto/sha256"
+ "crypto/sha512"
+ "crypto/sha3"
+ "golang.org/x/crypto/pbkdf2"
+)
+func Run(r *rsa.PrivateKey, e *ecdsa.PrivateKey, ed ed25519.PrivateKey, opts crypto.SignerOpts, curve ecdh.Curve, key *ecdh.PrivateKey, peer *ecdh.PublicKey, dk *mlkem.DecapsulationKey768, ek *mlkem.EncapsulationKey1024, block cipher.Block) {
+ _ = sha256.Sum256([]byte("PRIVATE_SENTINEL"))
+ _ = sha512.Sum512_256(nil)
+ _ = sha3.NewSHAKE128()
+ _, _ = rsa.GenerateKey(rand.Reader, 4096)
+ _, _ = rsa.EncryptOAEP(sha256.New(), rand.Reader, &r.PublicKey, nil, nil)
+ _, _ = rsa.SignPSS(rand.Reader, r, crypto.SHA256, nil, nil)
+ _, _ = rsa.SignPKCS1v15(rand.Reader, r, crypto.SHA256, nil)
+ _, _, _ = ecdsa.Sign(rand.Reader, e, nil)
+ _ = ed25519.Sign(ed, nil)
+ _, _ = ed.Sign(rand.Reader, nil, opts)
+ _ = ecdh.X25519()
+ _, _ = curve.GenerateKey(rand.Reader)
+ _, _ = key.ECDH(peer)
+ _, _ = rand.Read(nil)
+ _, _ = mlkem.GenerateKey768()
+ _, _ = dk.Decapsulate(nil)
+ _, _ = ek.Encapsulate()
+ _ = cipher.NewCBCEncrypter(block, nil)
+ _ = pbkdf2.Key(nil, nil, 10, 32, sha256.New)
+}`)
+	expected := map[string]struct {
+		family, parameter, oid string
+		function               cdx.CryptoFunction
+	}{
+		"crypto/sha256.Sum256":                             {"SHA-2", "256", "2.16.840.1.101.3.4.2.1", cdx.CryptoFunctionDigest},
+		"crypto/sha512.Sum512_256":                         {"SHA-2", "256", "2.16.840.1.101.3.4.2.6", cdx.CryptoFunctionDigest},
+		"crypto/sha3.NewSHAKE128":                          {"SHA-3", "128", "2.16.840.1.101.3.4.2.11", cdx.CryptoFunctionDigest},
+		"crypto/rsa.GenerateKey":                           {"", "4096", "", cdx.CryptoFunctionKeygen},
+		"crypto/rsa.EncryptOAEP":                           {"RSAES-OAEP", "", "1.2.840.113549.1.1.7", cdx.CryptoFunctionEncrypt},
+		"crypto/rsa.SignPSS":                               {"RSASSA-PSS", "", "1.2.840.113549.1.1.10", cdx.CryptoFunctionSign},
+		"crypto/rsa.SignPKCS1v15":                          {"RSASSA-PKCS1", "", "", cdx.CryptoFunctionSign},
+		"crypto/ecdsa.Sign":                                {"ECDSA", "", "", cdx.CryptoFunctionSign},
+		"crypto/ed25519.Sign":                              {"EdDSA", "", "1.3.101.112", cdx.CryptoFunctionSign},
+		"(crypto/ed25519.PrivateKey).Sign":                 {"EdDSA", "", "", cdx.CryptoFunctionSign},
+		"crypto/ecdh.X25519":                               {"ECDH", "", "1.3.101.110", ""},
+		"(crypto/ecdh.Curve).GenerateKey":                  {"ECDH", "", "", cdx.CryptoFunctionKeygen},
+		"(*crypto/ecdh.PrivateKey).ECDH":                   {"ECDH", "", "", cdx.CryptoFunctionKeyderive},
+		"crypto/rand.Read":                                 {"", "", "", cdx.CryptoFunctionGenerate},
+		"crypto/mlkem.GenerateKey768":                      {"ML-KEM", "768", "2.16.840.1.101.3.4.4.2", cdx.CryptoFunctionKeygen},
+		"(*crypto/mlkem.DecapsulationKey768).Decapsulate":  {"ML-KEM", "768", "2.16.840.1.101.3.4.4.2", cdx.CryptoFunctionDecapsulate},
+		"(*crypto/mlkem.EncapsulationKey1024).Encapsulate": {"ML-KEM", "1024", "2.16.840.1.101.3.4.4.3", cdx.CryptoFunctionEncapsulate},
+		"crypto/cipher.NewCBCEncrypter":                    {"", "", "", cdx.CryptoFunctionEncrypt},
+		"golang.org/x/crypto/pbkdf2.Key":                   {"PBKDF2", "", "", cdx.CryptoFunctionKeyderive},
+	}
+	result, err := (Source{Path: directory, Offline: true}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, entry := range result.Entries {
+		if entry.Component.CryptoProperties == nil || entry.Component.CryptoProperties.AlgorithmProperties == nil {
+			continue
+		}
+		for symbol, want := range expected {
+			if entry.Evidence.Symbol != symbol && !strings.Contains(entry.Evidence.Symbol, symbol+"(") {
+				continue
+			}
+			seen[symbol] = true
+			properties := entry.Component.CryptoProperties
+			a := properties.AlgorithmProperties
+			if a.AlgorithmFamily != want.family || a.ParameterSetIdentifier != want.parameter || properties.OID != want.oid {
+				t.Errorf("%s: family=%q parameter=%q oid=%q; want %+v", symbol, a.AlgorithmFamily, a.ParameterSetIdentifier, properties.OID, want)
+			}
+			if want.function == "" {
+				if a.CryptoFunctions != nil {
+					t.Errorf("%s invented an operation: %v", symbol, *a.CryptoFunctions)
+				}
+			} else if a.CryptoFunctions == nil || !slices.Equal(*a.CryptoFunctions, []cdx.CryptoFunction{want.function}) {
+				t.Errorf("%s did not retain the precise operation %s", symbol, want.function)
+			}
+			if a.ClassicalSecurityLevel != nil || a.NistQuantumSecurityLevel != nil || a.CertificationLevel != nil {
+				t.Errorf("%s inferred security or certification claims", symbol)
+			}
+		}
+	}
+	for symbol := range expected {
+		if !seen[symbol] {
+			t.Errorf("missing %s", symbol)
+		}
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") {
+			t.Fatalf("invalid or unsafe enriched output: %v", err)
+		}
+	}
+}
+
 func TestGoSourceSymbolsParametersAndGaps(t *testing.T) {
 	directory := fixture(t, `package example
 import (
@@ -465,22 +570,21 @@ func Run(signer crypto.Signer, private *ecdh.PrivateKey, public *ecdh.PublicKey,
 			}
 		})
 	}
-	count, scope := 0, false
+	count := 0
 	for _, entry := range result.Entries {
 		if entry.Component.CryptoProperties != nil {
 			count++
 		}
 		if entry.Component.Properties != nil {
 			for _, property := range *entry.Component.Properties {
-				scope = scope || property.Name == "ciphertrail:analysis-scope" && strings.Contains(property.Value, "not runtime execution")
+				if property.Name == "ciphertrail:analysis-scope" {
+					t.Fatal("generic analysis boilerplate was copied into component metadata")
+				}
 			}
 		}
 	}
 	if count != len(tests) {
 		t.Fatalf("non-asset helpers created cryptographic assets: got %d, want %d", count, len(tests))
-	}
-	if !scope {
-		t.Fatal("static analysis scope was discarded rather than retained as metadata")
 	}
 	data, err := cyclonedx.Encode([]inventory.Collection{{Collector: "go", Result: result}})
 	if err != nil || cyclonedx.Validate(data) != nil {
@@ -1257,9 +1361,12 @@ func Run() { _ = sha256.Sum256(nil) }
 	if !names["SHA-256"] || !names["SHA-512"] || !names["SHA-1"] || len(names) != 3 {
 		t.Fatalf("production evidence lost or fixture retained: %v", names)
 	}
-	data, err := cyclonedx.Encode([]inventory.Collection{{Result: result}})
-	if err != nil || !strings.Contains(string(data), "ciphertrail:source-exclusion-paths") {
-		t.Fatalf("missing exclusion provenance: %v", err)
+	recorded := false
+	for _, detail := range result.Details {
+		recorded = recorded || detail.Name == "source-exclusion-paths"
+	}
+	if !recorded {
+		t.Fatal("missing exclusion provenance in run details")
 	}
 }
 

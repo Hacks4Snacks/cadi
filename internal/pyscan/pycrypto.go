@@ -13,20 +13,26 @@ func pyCryptoCall(name string, call value, evidence *inventory.Evidence) (cdx.Co
 	if strings.HasPrefix(short, "Hash.") && strings.HasSuffix(short, ".new") {
 		class := strings.TrimSuffix(strings.TrimPrefix(short, "Hash."), ".new")
 		if hash := hashName(class); hash != "" {
-			primitive := cdx.CryptoPrimitiveHash
-			if strings.HasPrefix(hash, "SHAKE") {
-				primitive = cdx.CryptoPrimitiveXOF
+			component, known := inventory.HashAlgorithm(hash)
+			if known && component.CryptoProperties.AlgorithmProperties.AlgorithmFamily == "BLAKE2" {
+				bytes, bits := supplied(call, -1, "digest_bytes"), supplied(call, -1, "digest_bits")
+				switch {
+				case bytes && bits:
+					evidence.Unresolved = append(evidence.Unresolved, "digest-size-bits")
+				case bytes:
+					byteCountParameter(&component, evidence, "digest-size-bits", argument(call, -1, "digest_bytes"))
+				case bits:
+					parameter(&component, evidence, "digest-size-bits", argument(call, -1, "digest_bits"), false)
+				}
 			}
-			return algorithm(hash, primitive, ""), true
+			return component, known
 		}
 		if class == "HMAC" {
-			label := "HMAC"
-			if hash := digest(argument(call, 2, "digestmod")); hash != "" {
-				label += "-" + hash
-			} else {
+			hash := digest(argument(call, 2, "digestmod"))
+			if hash == "" {
 				evidence.Unresolved = append(evidence.Unresolved, "hash")
 			}
-			component := algorithm(label, cdx.CryptoPrimitiveMAC, "")
+			component := inventory.HMACAlgorithm(hash)
 			parameter(&component, evidence, "key-size-bits", argument(call, 0, "key"), true)
 			return component, true
 		}
@@ -40,7 +46,10 @@ func pyCryptoCall(name string, call value, evidence *inventory.Evidence) (cdx.Co
 			component = algorithm("AES", cdx.CryptoPrimitiveBlockCipher, "")
 			evidence.Unresolved = append(evidence.Unresolved, "mode")
 		}
+		a := component.CryptoProperties.AlgorithmProperties
+		a.AlgorithmFamily = "AES"
 		parameter(&component, evidence, "key-size-bits", argument(call, 0, "key"), true)
+		component.CryptoProperties.OID = inventory.AESOID(a.Mode, a.ParameterSetIdentifier)
 		if supplied(call, -1, "nonce") {
 			parameter(&component, evidence, "nonce-size-bits", argument(call, -1, "nonce"), true)
 		}

@@ -53,12 +53,15 @@ func ConfiguredKeyAlgorithm(name string, size int) (cdx.Component, bool) {
 		algorithm = Algorithm(name, cdx.CryptoPrimitivePKE)
 	case "ECDSA":
 		algorithm = Algorithm(name, cdx.CryptoPrimitiveSignature)
+		algorithm.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "ECDSA"
 		if size == 256 || size == 384 || size == 521 {
 			algorithm.CryptoProperties.AlgorithmProperties.EllipticCurve = CurveID("P-" + strconv.Itoa(size))
 		}
 	case "Ed25519":
 		algorithm = Algorithm(name, cdx.CryptoPrimitiveSignature)
+		algorithm.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "EdDSA"
 		algorithm.CryptoProperties.AlgorithmProperties.EllipticCurve = CurveID("Ed25519")
+		algorithm.CryptoProperties.OID = OIDEd25519
 		size = 0
 	default:
 		return cdx.Component{}, false
@@ -125,11 +128,14 @@ func ConfiguredEncryptionAlgorithm(provider string, writes bool, values []Attrib
 	switch provider {
 	case "secretbox":
 		algorithm = Algorithm("XSalsa20-Poly1305", cdx.CryptoPrimitiveAE)
+		algorithm.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "Salsa20"
 	case "aesgcm":
 		algorithm = Algorithm("AES-GCM", cdx.CryptoPrimitiveAE)
+		algorithm.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "AES"
 		algorithm.CryptoProperties.AlgorithmProperties.Mode = cdx.CryptoAlgorithmModeGCM
 	case "aescbc":
 		algorithm = Algorithm("AES-CBC", cdx.CryptoPrimitiveBlockCipher)
+		algorithm.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "AES"
 		algorithm.CryptoProperties.AlgorithmProperties.Mode = cdx.CryptoAlgorithmModeCBC
 		algorithm.CryptoProperties.AlgorithmProperties.Padding = cdx.CryptoPaddingPKCS7
 	default:

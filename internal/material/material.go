@@ -31,7 +31,7 @@ func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, pare
 	case *dsa.PrivateKey:
 		kind, key = cdx.RelatedCryptoMaterialTypePrivateKey, &private.PublicKey
 	}
-	var name, curve string
+	var name, curve, family, oid string
 	var bits int
 	primitive := cdx.CryptoPrimitiveSignature
 	switch public := key.(type) {
@@ -39,12 +39,16 @@ func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, pare
 		name, bits, primitive = "RSA", public.N.BitLen(), cdx.CryptoPrimitivePKE
 	case *ecdsa.PublicKey:
 		name, curve, bits = "ECDSA", public.Curve.Params().Name, public.Curve.Params().BitSize
+		family = "ECDSA"
 	case ed25519.PublicKey:
 		name, curve, bits = "Ed25519", "Ed25519", 256
+		family, oid = "EdDSA", inventory.OIDEd25519
 	case *dsa.PublicKey:
 		name, bits = "DSA", public.P.BitLen()
+		family = "DSA"
 	case *ecdh.PublicKey:
 		name, primitive = "ECDH", cdx.CryptoPrimitiveKeyAgree
+		family = "ECDH"
 		switch public.Curve() {
 		case ecdh.P256():
 			curve, bits = "P-256", 256
@@ -54,6 +58,7 @@ func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, pare
 			curve, bits = "P-521", 521
 		case ecdh.X25519():
 			curve, bits = "X25519", 256
+			oid = inventory.OIDX25519
 		default:
 			return "", fmt.Errorf("unsupported ECDH curve")
 		}
@@ -66,8 +71,10 @@ func AddKey(result *inventory.Result, key any, evidence inventory.Evidence, pare
 	}
 	fingerprint := digest(der)
 	algorithm := inventory.Algorithm(name, primitive)
+	algorithm.CryptoProperties.AlgorithmProperties.AlgorithmFamily = family
 	algorithm.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = fmt.Sprint(bits)
 	algorithm.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID(curve)
+	algorithm.CryptoProperties.OID = oid
 	algorithm.BOMRef = inventory.Ref("algorithm", name, fmt.Sprint(bits), curve)
 	algorithmRef := result.Add(algorithm, evidence, parent)
 	component := cdx.Component{
@@ -91,7 +98,7 @@ func AddCertificate(result *inventory.Result, certificate *x509.Certificate, evi
 	if err != nil {
 		return "", err
 	}
-	signature := inventory.Algorithm(certificate.SignatureAlgorithm.String(), cdx.CryptoPrimitiveSignature)
+	signature := signatureAlgorithm(certificate.SignatureAlgorithm)
 	signature.BOMRef = inventory.Ref("certificate-signature", signature.Name)
 	signatureRef := result.Add(signature, evidence, parent)
 	fingerprint := digest(certificate.Raw)
@@ -115,6 +122,41 @@ func AddCertificate(result *inventory.Result, certificate *x509.Certificate, evi
 		},
 	}
 	return result.Add(component, evidence, parent), nil
+}
+
+var signatureAlgorithms = map[x509.SignatureAlgorithm]struct {
+	family, oid string
+	padding     cdx.CryptoPadding
+}{
+	x509.MD5WithRSA:       {"RSASSA-PKCS1", "1.2.840.113549.1.1.4", cdx.CryptoPaddingPKCS1v15},
+	x509.SHA1WithRSA:      {"RSASSA-PKCS1", "1.2.840.113549.1.1.5", cdx.CryptoPaddingPKCS1v15},
+	x509.SHA256WithRSA:    {"RSASSA-PKCS1", "1.2.840.113549.1.1.11", cdx.CryptoPaddingPKCS1v15},
+	x509.SHA384WithRSA:    {"RSASSA-PKCS1", "1.2.840.113549.1.1.12", cdx.CryptoPaddingPKCS1v15},
+	x509.SHA512WithRSA:    {"RSASSA-PKCS1", "1.2.840.113549.1.1.13", cdx.CryptoPaddingPKCS1v15},
+	x509.SHA256WithRSAPSS: {"RSASSA-PSS", inventory.OIDRSASSAPSS, ""},
+	x509.SHA384WithRSAPSS: {"RSASSA-PSS", inventory.OIDRSASSAPSS, ""},
+	x509.SHA512WithRSAPSS: {"RSASSA-PSS", inventory.OIDRSASSAPSS, ""},
+	x509.DSAWithSHA1:      {"DSA", "1.2.840.10040.4.3", ""},
+	x509.DSAWithSHA256:    {"DSA", "2.16.840.1.101.3.4.3.2", ""},
+	x509.ECDSAWithSHA1:    {"ECDSA", "1.2.840.10045.4.1", ""},
+	x509.ECDSAWithSHA256:  {"ECDSA", "1.2.840.10045.4.3.2", ""},
+	x509.ECDSAWithSHA384:  {"ECDSA", "1.2.840.10045.4.3.3", ""},
+	x509.ECDSAWithSHA512:  {"ECDSA", "1.2.840.10045.4.3.4", ""},
+	x509.PureEd25519:      {"EdDSA", inventory.OIDEd25519, ""},
+}
+
+func signatureAlgorithm(identity x509.SignatureAlgorithm) cdx.Component {
+	component := inventory.Algorithm(identity.String(), cdx.CryptoPrimitiveSignature)
+	if facts, known := signatureAlgorithms[identity]; known {
+		a := component.CryptoProperties.AlgorithmProperties
+		a.AlgorithmFamily, a.Padding = facts.family, facts.padding
+		a.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionSign}
+		component.CryptoProperties.OID = facts.oid
+		if identity == x509.PureEd25519 {
+			a.EllipticCurve = inventory.CurveID("Ed25519")
+		}
+	}
+	return component
 }
 
 // AddSSHKey records host/authorized-key metadata without treating key format as a signature algorithm.

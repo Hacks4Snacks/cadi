@@ -91,11 +91,20 @@ type Dependency struct {
 type Result struct {
 	Entries      []Entry
 	Dependencies []Dependency
-	Properties   []cdx.Property
+	Details      []RunMetadata
 	Diagnostics  []Diagnostic
 	Coverage     []Coverage
 	err          error
 }
+
+// RunMetadata holds a public execution detail as a structured JSON value.
+type RunMetadata struct {
+	Name  string          `json:"name"`
+	Value json.RawMessage `json:"value"`
+}
+
+// ScanReportFormat identifies CipherTrail's execution report, not a CBOM.
+const ScanReportFormat = "CipherTrailScanReport"
 
 // Coverage describes analyzer execution and preparation gaps, not cryptographic policy.
 type Coverage struct {
@@ -160,9 +169,14 @@ func (r *Result) Err() error {
 	return r.err
 }
 
-// Metadata records collection-level public context or an analysis limitation.
-func (r *Result) Metadata(name, value string) {
-	r.Properties = append(r.Properties, cdx.Property{Name: "ciphertrail:" + name, Value: value})
+// Metadata records structured public details for the optional execution report.
+func (r *Result) Metadata(name string, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		r.err = errors.Join(r.err, fmt.Errorf("encode run metadata %q: %w", name, err))
+		return
+	}
+	r.Details = append(r.Details, RunMetadata{Name: name, Value: data})
 }
 
 // DependOn associates a component with a required component without claiming ownership.
@@ -174,7 +188,7 @@ func (r *Result) DependOn(source, target string) {
 func (r *Result) Merge(other Result) {
 	r.Entries = append(r.Entries, other.Entries...)
 	r.Dependencies = append(r.Dependencies, other.Dependencies...)
-	r.Properties = append(r.Properties, other.Properties...)
+	r.Details = append(r.Details, other.Details...)
 	r.Diagnostics = append(r.Diagnostics, other.Diagnostics...)
 	r.Coverage = append(r.Coverage, other.Coverage...)
 	r.err = errors.Join(r.err, other.err)
@@ -193,6 +207,84 @@ func Algorithm(name string, primitive cdx.CryptoPrimitive) cdx.Component {
 	}
 }
 
+const (
+	OIDRSAESOAEP = "1.2.840.113549.1.1.7"
+	OIDRSASSAPSS = "1.2.840.113549.1.1.10"
+	OIDX25519    = "1.3.101.110"
+	OIDX448      = "1.3.101.111"
+	OIDEd25519   = "1.3.101.112"
+	OIDEd448     = "1.3.101.113"
+)
+
+var hashAlgorithms = map[string]struct {
+	primitive                       cdx.CryptoPrimitive
+	family, parameter, oid, hmacOID string
+}{
+	"MD5":         {cdx.CryptoPrimitiveHash, "MD5", "128", "1.2.840.113549.2.5", ""},
+	"SHA-1":       {cdx.CryptoPrimitiveHash, "SHA-1", "160", "1.3.14.3.2.26", ""},
+	"SHA-224":     {cdx.CryptoPrimitiveHash, "SHA-2", "224", "2.16.840.1.101.3.4.2.4", "1.2.840.113549.2.8"},
+	"SHA-256":     {cdx.CryptoPrimitiveHash, "SHA-2", "256", "2.16.840.1.101.3.4.2.1", "1.2.840.113549.2.9"},
+	"SHA-384":     {cdx.CryptoPrimitiveHash, "SHA-2", "384", "2.16.840.1.101.3.4.2.2", "1.2.840.113549.2.10"},
+	"SHA-512":     {cdx.CryptoPrimitiveHash, "SHA-2", "512", "2.16.840.1.101.3.4.2.3", "1.2.840.113549.2.11"},
+	"SHA-512/224": {cdx.CryptoPrimitiveHash, "SHA-2", "224", "2.16.840.1.101.3.4.2.5", ""},
+	"SHA-512/256": {cdx.CryptoPrimitiveHash, "SHA-2", "256", "2.16.840.1.101.3.4.2.6", ""},
+	"SHA3-224":    {cdx.CryptoPrimitiveHash, "SHA-3", "224", "2.16.840.1.101.3.4.2.7", "2.16.840.1.101.3.4.2.13"},
+	"SHA3-256":    {cdx.CryptoPrimitiveHash, "SHA-3", "256", "2.16.840.1.101.3.4.2.8", "2.16.840.1.101.3.4.2.14"},
+	"SHA3-384":    {cdx.CryptoPrimitiveHash, "SHA-3", "384", "2.16.840.1.101.3.4.2.9", "2.16.840.1.101.3.4.2.15"},
+	"SHA3-512":    {cdx.CryptoPrimitiveHash, "SHA-3", "512", "2.16.840.1.101.3.4.2.10", "2.16.840.1.101.3.4.2.16"},
+	"SHAKE128":    {cdx.CryptoPrimitiveXOF, "SHA-3", "128", "2.16.840.1.101.3.4.2.11", ""},
+	"SHAKE256":    {cdx.CryptoPrimitiveXOF, "SHA-3", "256", "2.16.840.1.101.3.4.2.12", ""},
+	"BLAKE2b":     {cdx.CryptoPrimitiveHash, "BLAKE2", "", "", ""},
+	"BLAKE2s":     {cdx.CryptoPrimitiveHash, "BLAKE2", "", "", ""},
+	"BLAKE2b-256": {cdx.CryptoPrimitiveHash, "BLAKE2", "256", "", ""},
+	"BLAKE2b-384": {cdx.CryptoPrimitiveHash, "BLAKE2", "384", "", ""},
+	"BLAKE2b-512": {cdx.CryptoPrimitiveHash, "BLAKE2", "512", "", ""},
+	"BLAKE2s-128": {cdx.CryptoPrimitiveHash, "BLAKE2", "128", "", ""},
+	"BLAKE2s-256": {cdx.CryptoPrimitiveHash, "BLAKE2", "256", "", ""},
+}
+
+// HashAlgorithm constructs a modeled hash identity, not a name-based export heuristic.
+func HashAlgorithm(name string) (cdx.Component, bool) {
+	facts, known := hashAlgorithms[name]
+	if !known {
+		return cdx.Component{}, false
+	}
+	component := Algorithm(name, facts.primitive)
+	properties := component.CryptoProperties
+	properties.OID = facts.oid
+	properties.AlgorithmProperties.AlgorithmFamily = facts.family
+	properties.AlgorithmProperties.ParameterSetIdentifier = facts.parameter
+	properties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionDigest}
+	return component, true
+}
+
+// HMACAlgorithm keeps digest identity separate from the independently resolved key length.
+func HMACAlgorithm(hash string) cdx.Component {
+	name := "HMAC"
+	if hash != "" {
+		name += "-" + hash
+	}
+	component := Algorithm(name, cdx.CryptoPrimitiveMAC)
+	component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "HMAC"
+	component.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{cdx.CryptoFunctionTag}
+	component.CryptoProperties.OID = hashAlgorithms[hash].hmacOID
+	return component
+}
+
+var aesOIDs = map[cdx.CryptoAlgorithmMode]map[string]string{
+	cdx.CryptoAlgorithmModeECB: {"128": "2.16.840.1.101.3.4.1.1", "192": "2.16.840.1.101.3.4.1.21", "256": "2.16.840.1.101.3.4.1.41"},
+	cdx.CryptoAlgorithmModeCBC: {"128": "2.16.840.1.101.3.4.1.2", "192": "2.16.840.1.101.3.4.1.22", "256": "2.16.840.1.101.3.4.1.42"},
+	cdx.CryptoAlgorithmModeOFB: {"128": "2.16.840.1.101.3.4.1.3", "192": "2.16.840.1.101.3.4.1.23", "256": "2.16.840.1.101.3.4.1.43"},
+	cdx.CryptoAlgorithmModeCFB: {"128": "2.16.840.1.101.3.4.1.4", "192": "2.16.840.1.101.3.4.1.24", "256": "2.16.840.1.101.3.4.1.44"},
+	cdx.CryptoAlgorithmModeGCM: {"128": "2.16.840.1.101.3.4.1.6", "192": "2.16.840.1.101.3.4.1.26", "256": "2.16.840.1.101.3.4.1.46"},
+	cdx.CryptoAlgorithmModeCCM: {"128": "2.16.840.1.101.3.4.1.7", "192": "2.16.840.1.101.3.4.1.27", "256": "2.16.840.1.101.3.4.1.47"},
+}
+
+// AESOID returns a CSOR identifier only for an explicitly resolved mode and key size.
+func AESOID(mode cdx.CryptoAlgorithmMode, parameter string) string {
+	return aesOIDs[mode][parameter]
+}
+
 // CurveID maps Go curve names to CycloneDX identifiers, preserving other values for schema validation.
 func CurveID(name string) string {
 	switch name {
@@ -200,8 +292,12 @@ func CurveID(name string) string {
 		return "nist/" + name
 	case "Ed25519":
 		return "other/Ed25519"
+	case "Ed448":
+		return "other/Ed448"
 	case "X25519":
 		return "other/Curve25519"
+	case "X448":
+		return "other/Curve448"
 	default:
 		return name
 	}

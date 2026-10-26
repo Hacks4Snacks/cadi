@@ -98,7 +98,6 @@ func (r resource) bootstrap(ctx context.Context, node *yaml.Node, kind string) e
 			base+"/nodeRegistration/kubeletExtraArgs", phase.label))
 	}
 	failures = errors.Join(failures, r.bootstrapFiles(ctx, object["files"], field+"/files"))
-	r.result.Metadata("bootstrap-analysis-scope", "explicit TLS, PKI, and embedded file declarations only; implicit kubeadm defaults, runtime identities, scripts, external file reads, and Secret-backed content are not evaluated")
 	return failures
 }
 

@@ -53,9 +53,6 @@ func (d Detector) Detect(ctx context.Context, file *input.File) (inventory.Resul
 	}
 	scanner := resource{result: &result, evidence: file.Evidence, parent: file.Parent, budget: &decodeBudget{}}
 	found, err := scanner.documents(ctx, data, d.Strict)
-	if found {
-		result.Metadata("analysis-scope", "local Kubernetes declarations and embedded material only; no Helm rendering, cluster access, issuance, deployment, key-pair validation, trust, or protocol negotiation is established")
-	}
 	return result, found, err
 }
 

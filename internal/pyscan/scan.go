@@ -71,7 +71,6 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	if len(files) == 0 {
 		return result, nil
 	}
-	result.Metadata("python-analysis-scope", "static import/binding and bounded value analysis only; target imports, statements, annotations, dynamic imports, arbitrary calls, and runtime monkey-patching are not executed or proven")
 	interpreter := s.interpreter
 	if interpreter == "" {
 		var err error
@@ -122,7 +121,6 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		Name: filepath.Base(s.Selection.Root) + " (Python source)", BOMRef: inventory.Ref("python-source", s.Selection.Root)},
 		inventory.Evidence{Kind: "present", Collector: "python", Location: s.Selection.Root}, "")
 	providers := map[string]string{}
-	httpContext := false
 	for _, document := range documents {
 		shadowed, err := localProviders(s.Selection.Root, document.file.Path)
 		if err != nil {
@@ -166,10 +164,6 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 			evidence := inventory.Evidence{Kind: "configured", Collector: "python", Location: document.file.Location, Line: call.Line, Symbol: name}
 			var component cdx.Component
 			if isHTTP {
-				if !httpContext {
-					result.Metadata("python-http-scope", "configured HTTPS request intent only; redirects, proxies, custom transports, negotiated TLS settings, peer certificates, and verification defaults are not established; request data is not exported")
-					httpContext = true
-				}
 				switch http.scheme(call.Value) {
 				case schemeHTTPS:
 					component = httpsConfiguration()

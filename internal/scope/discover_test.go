@@ -6,7 +6,35 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"ciphertrail/internal/inventory"
 )
+
+func TestScanReportsAndAllOutputsAreExcluded(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{
+		"source.py":    "value = 1\n",
+		"history.json": `{"reportFormat":"` + inventory.ScanReportFormat + `","reportVersion":1,"tool":{"name":"ciphertrail"}}`,
+		"cbom.out":     "unrelated output bytes",
+		"scan.out":     "unrelated output bytes",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selection, err := Discover(context.Background(), root, Options{
+		SkipReports: true, Outputs: []string{filepath.Join(root, "cbom.out"), filepath.Join(root, "scan.out")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Files) != 1 || selection.Files[0].Location != "source.py" {
+		t.Fatalf("reports or output destinations were selected as inputs: %+v", selection.Files)
+	}
+}
 
 func TestSharedScopeAndHelmClassification(t *testing.T) {
 	root := t.TempDir()
@@ -28,6 +56,7 @@ func TestSharedScopeAndHelmClassification(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			t.Fatal(err)
 		}
+
 		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 			t.Fatal(err)
 		}

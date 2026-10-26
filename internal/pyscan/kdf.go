@@ -34,6 +34,12 @@ func kdfCall(name string, call value, evidence *inventory.Evidence) (cdx.Compone
 		return cdx.Component{}, false
 	}
 	component := algorithm(label, cdx.CryptoPrimitiveKDF, function)
+	switch class {
+	case "kdf.pbkdf2.PBKDF2HMAC":
+		component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "PBKDF2"
+	case "kdf.hkdf.HKDF", "kdf.hkdf.HKDFExpand":
+		component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "HKDF"
+	}
 	byteCountParameter(&component, evidence, "derived-key-size-bits", argument(constructor, 1, "length"))
 	if class == "kdf.scrypt.Scrypt" {
 		for index, parameterName := range []string{"n", "r", "p"} {

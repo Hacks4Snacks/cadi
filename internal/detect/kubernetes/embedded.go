@@ -54,7 +54,6 @@ func (r resource) configMap(ctx context.Context, node *yaml.Node) error {
 			failures = errors.Join(failures, r.embedded(ctx, content, r.at(value, field), inventory.EmbeddedContext{}))
 		}
 	}
-	r.result.Metadata("embedded-analysis-scope", "typed embedded YAML/JSON, PEM, and bootstrap configuration only; scripts, runtime substitutions, external files, and Secret retrieval are not evaluated")
 	return failures
 }
 

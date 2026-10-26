@@ -100,7 +100,7 @@ func TestPythonMutationInvalidatesNestedValueFacts(t *testing.T) {
 	for _, entry := range result.Entries {
 		if entry.Component.Name == "AES-GCM" {
 			found = true
-			if entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+			if entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" || entry.Component.CryptoProperties.OID != "" {
 				t.Fatal("a mutated byte factory established a key size")
 			}
 		}
@@ -122,7 +122,8 @@ AES.new(key, AES.MODE_GCM)
 		t.Fatal(err)
 	}
 	for _, entry := range result.Entries {
-		if entry.Component.Name == "AES-GCM" && entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+		if entry.Component.Name == "AES-GCM" && (entry.Component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" ||
+			entry.Component.CryptoProperties.OID != "") {
 			t.Fatal("mutable bytearray length was treated as immutable")
 		}
 	}

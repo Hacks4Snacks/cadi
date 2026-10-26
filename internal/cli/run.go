@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,8 @@ Additional explicit inputs:
 
 Output:
   --output PATH     CycloneDX 1.7 JSON (default: stdout)
+  --scan-report PATH
+                    Write detailed execution metadata to a separate JSON file
   --summary         Show crypto findings with API/library context on stderr
   --include-dependencies
                     Include all collected software; default is crypto-focused
@@ -81,7 +84,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version", "--version":
-		fmt.Fprintln(stdout, "ciphertrail "+Version)
+		fmt.Fprintln(stdout, "ciphertrail "+toolVersion())
 		return 0
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
@@ -93,6 +96,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	var options scan.Options
 	var output string
+	var reportPath string
 	var includeDependencies bool
 	var summary bool
 	flags := pflag.NewFlagSet("scan", pflag.ContinueOnError)
@@ -104,6 +108,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.StringArrayVar(&options.TLS, "tls", nil, "explicit TLS host:port")
 	flags.StringArrayVar(&options.SSH, "ssh", nil, "explicit SSH host:port")
 	flags.StringVar(&output, "output", "-", "output file or - for stdout")
+	flags.StringVar(&reportPath, "scan-report", "", "separate JSON scan report file")
 	flags.BoolVar(&includeDependencies, "include-dependencies", false, "include the full collected dependency inventory")
 	flags.BoolVar(&summary, "summary", false, "show a crypto-focused findings table on stderr")
 	flags.StringVar(&options.GOOS, "goos", "", "target GOOS")
@@ -129,15 +134,35 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ERROR: output must be a path or -")
 		return 2
 	}
-	plan, err := options.Prepare(ctx, output)
+	if flags.Changed("scan-report") && (reportPath == "" || reportPath == "-") {
+		fmt.Fprintln(stderr, "ERROR: --scan-report must be a file path, not stdout or an empty value")
+		return 2
+	}
+	plan, err := options.Prepare(ctx, output, reportPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return 2
 	}
-	target, err := prepareOutput(output, plan.Inputs)
+	protectedInputs := slices.Clone(plan.Inputs)
+	if reportPath != "" {
+		protectedInputs = append(protectedInputs, reportPath)
+	}
+	target, err := prepareOutput(output, protectedInputs, outputCBOM)
 	if err != nil {
 		fmt.Fprintln(stderr, "ERROR:", err)
 		return 1
+	}
+	var reportTarget *outputTarget
+	if reportPath != "" {
+		protectedInputs = slices.Clone(plan.Inputs)
+		if output != "-" {
+			protectedInputs = append(protectedInputs, output)
+		}
+		reportTarget, err = prepareOutput(reportPath, protectedInputs, outputScanReport)
+		if err != nil {
+			fmt.Fprintln(stderr, "ERROR:", err)
+			return 1
+		}
 	}
 	collections := scan.Run(ctx, plan.Requests)
 	failed := false
@@ -149,34 +174,81 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		writeCoverage(stderr, collection)
 		writeDiagnostics(stderr, collection.Result.Diagnostics)
 	}
-	data, err := cyclonedx.EncodeWithOptions(collections, cyclonedx.EncodeOptions{IncludeDependencies: includeDependencies})
-	if err != nil {
-		fmt.Fprintln(stderr, "ERROR:", err)
-		return 1
-	}
-	if target == nil {
-		n, err := stdout.Write(data)
-		if err == nil && n != len(data) {
-			err = io.ErrShortWrite
+	version := toolVersion()
+	data, outputErr := cyclonedx.EncodeWithOptions(collections, cyclonedx.EncodeOptions{IncludeDependencies: includeDependencies, ToolVersion: version})
+	if outputErr == nil {
+		if target == nil {
+			n, err := stdout.Write(data)
+			if err == nil && n != len(data) {
+				err = io.ErrShortWrite
+			}
+			if err != nil {
+				outputErr = fmt.Errorf("write CBOM: %w", err)
+			}
+		} else {
+			outputErr = target.write(data)
 		}
-		if err != nil {
-			fmt.Fprintln(stderr, "ERROR: write CBOM:", err)
-			return 1
-		}
-	} else if err := target.write(data); err != nil {
-		fmt.Fprintln(stderr, "ERROR:", err)
-		return 1
 	}
-	if summary {
+	if outputErr != nil {
+		fmt.Fprintln(stderr, "ERROR:", outputErr)
+	}
+	if summary && outputErr == nil {
 		if err := writeSummary(stderr, data, failed); err != nil {
 			fmt.Fprintln(stderr, "ERROR: write findings summary:", err)
-			return 1
+			outputErr = fmt.Errorf("write findings summary: %w", err)
 		}
 	}
-	if failed {
+	reportFailed := false
+	if reportTarget != nil {
+		report, err := scan.EncodeReport(collections, scan.ReportOptions{
+			ToolVersion: version, IncludeDependencies: includeDependencies, CBOM: data, OutputError: outputErr,
+		})
+		if err == nil {
+			err = reportTarget.write(report)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "ERROR: write scan report:", err)
+			reportFailed = true
+		}
+	}
+	if failed || outputErr != nil || reportFailed {
 		return 1
 	}
 	return 0
+}
+
+func toolVersion() string {
+	info, _ := debug.ReadBuildInfo()
+	return versionFromBuildInfo(Version, info)
+}
+
+func versionFromBuildInfo(version string, info *debug.BuildInfo) string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	if info != nil {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+		var revision string
+		modified := false
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				revision = setting.Value
+			case "vcs.modified":
+				modified = setting.Value == "true"
+			}
+		}
+		if revision != "" {
+			value := "dev+" + revision[:min(len(revision), 12)]
+			if modified {
+				value += ".dirty"
+			}
+			return value
+		}
+	}
+	return "dev"
 }
 
 func writeSummary(writer io.Writer, data []byte, incomplete bool) error {

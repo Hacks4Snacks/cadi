@@ -12,6 +12,142 @@ import (
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
 
+func TestPythonKnownNativeAlgorithmFacts(t *testing.T) {
+	selection := fixture(t, map[string]string{"app.py": `
+import hashlib
+import hmac
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric import ed448, x448
+from Cryptodome.Hash import SHA3_256
+hashlib.sha256(b"PRIVATE_SENTINEL")
+hashlib.blake2b(b"PRIVATE_SENTINEL", digest_size=32)
+hashes.SHAKE128(32)
+hashlib.new(unknown_name)
+hmac.new(unknown_key, digestmod=hashlib.sha256)
+AESGCM(b"x" * 32)
+AESGCM(unknown_key)
+Cipher(algorithms.AES(b"x" * 16), modes.CBC(b"y" * 16)).encryptor()
+ed448.Ed448PrivateKey.generate()
+x448.X448PrivateKey.generate()
+SHA3_256.new(b"PRIVATE_SENTINEL")
+`})
+	expected := map[int]struct {
+		name, family, parameter, oid string
+	}{
+		9:  {"SHA-256", "SHA-2", "256", "2.16.840.1.101.3.4.2.1"},
+		10: {"BLAKE2b", "BLAKE2", "256", ""},
+		11: {"SHAKE128", "SHA-3", "128", "2.16.840.1.101.3.4.2.11"},
+		12: {"Hash configuration", "", "", ""},
+		13: {"HMAC-SHA-256", "HMAC", "", "1.2.840.113549.2.9"},
+		14: {"AES-GCM", "AES", "256", "2.16.840.1.101.3.4.1.46"},
+		15: {"AES-GCM", "AES", "", ""},
+		16: {"AES-CBC", "AES", "128", "2.16.840.1.101.3.4.1.2"},
+		17: {"Ed448", "EdDSA", "", "1.3.101.113"},
+		18: {"X448", "ECDH", "", "1.3.101.111"},
+		19: {"SHA3-256", "SHA-3", "256", "2.16.840.1.101.3.4.2.8"},
+	}
+	result, err := (Source{Selection: selection}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]bool{}
+	for _, entry := range result.Entries {
+		want, exists := expected[entry.Evidence.Line]
+		if !exists || entry.Component.Name != want.name || entry.Component.CryptoProperties == nil {
+			continue
+		}
+		seen[entry.Evidence.Line] = true
+		p := entry.Component.CryptoProperties
+		a := p.AlgorithmProperties
+		if a.AlgorithmFamily != want.family || a.ParameterSetIdentifier != want.parameter || p.OID != want.oid {
+			t.Errorf("line %d: family=%q parameter=%q oid=%q; want %+v", entry.Evidence.Line, a.AlgorithmFamily, a.ParameterSetIdentifier, p.OID, want)
+		}
+		if a.ClassicalSecurityLevel != nil || a.NistQuantumSecurityLevel != nil {
+			t.Error("enrichment invented a security strength")
+		}
+	}
+	for line := range expected {
+		if !seen[line] {
+			t.Errorf("missing algorithm at line %d", line)
+		}
+	}
+	for _, full := range []bool{false, true} {
+		data, err := cyclonedx.EncodeWithOptions([]inventory.Collection{{Result: result}}, cyclonedx.EncodeOptions{IncludeDependencies: full})
+		if err != nil || strings.Contains(string(data), "PRIVATE_SENTINEL") {
+			t.Fatalf("invalid or unsafe enriched output: %v", err)
+		}
+	}
+}
+
+func TestPythonNativeFactsRespectSchemesAndOperations(t *testing.T) {
+	source := `from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, hmac
+from cryptography.hazmat.primitives.ciphers import Cipher, modes
+from Crypto.Cipher import AES
+import hashlib
+import secrets
+key = rsa.generate_private_key(65537, 2048)
+mac = hmac.HMAC(unknown_key, hashes.SHA256())
+`
+	tests := []struct {
+		code, symbol, family, oid string
+		function                  cdx.CryptoFunction
+	}{
+		{"key.sign(data, padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32), hashes.SHA256())",
+			primitives + "asymmetric.rsa.RSAPrivateKey.sign", "RSASSA-PSS", inventory.OIDRSASSAPSS, cdx.CryptoFunctionSign},
+		{"key.public_key().encrypt(data, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))",
+			primitives + "asymmetric.rsa.RSAPublicKey.encrypt", "RSAES-OAEP", inventory.OIDRSAESOAEP, cdx.CryptoFunctionEncrypt},
+		{"key.sign(data, padding.PKCS1v15(), hashes.SHA256())",
+			primitives + "asymmetric.rsa.RSAPrivateKey.sign", "RSASSA-PKCS1", "", cdx.CryptoFunctionSign},
+		{"key.sign(data, unknown_padding, hashes.SHA256())",
+			primitives + "asymmetric.rsa.RSAPrivateKey.sign", "", "", cdx.CryptoFunctionSign},
+		{"mac.verify(data)", primitives + "hmac.HMAC.verify", "HMAC", "1.2.840.113549.2.9", cdx.CryptoFunctionVerify},
+		{"Cipher(unknown_algorithm, modes.CBC(iv)).encryptor()", primitives + "ciphers.Cipher.encryptor", "", "", cdx.CryptoFunctionEncrypt},
+		{"AES.new(unknown_key, AES.MODE_CBC)", "Crypto.Cipher.AES.new", "AES", "", ""},
+		{"AES.new(b'x' * 16, unknown_mode)", "Crypto.Cipher.AES.new", "AES", "", ""},
+		{"hashlib.pbkdf2_hmac('sha256', password, salt, 1000)", "hashlib.pbkdf2_hmac", "PBKDF2", "", cdx.CryptoFunctionKeyderive},
+		{"hashlib.scrypt(password, salt=salt, n=16384, r=8, p=1)", "hashlib.scrypt", "", "", cdx.CryptoFunctionKeyderive},
+		{"secrets.token_bytes(32)", "secrets.token_bytes", "", "", cdx.CryptoFunctionGenerate},
+	}
+	firstLine := strings.Count(source, "\n") + 1
+	for _, test := range tests {
+		source += test.code + "\n"
+	}
+	result, err := (Source{Selection: fixture(t, map[string]string{"app.py": source})}).Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]bool{}
+	for _, entry := range result.Entries {
+		index := entry.Evidence.Line - firstLine
+		if index < 0 || index >= len(tests) || entry.Evidence.Symbol != tests[index].symbol ||
+			entry.Component.CryptoProperties == nil {
+			continue
+		}
+		seen[index] = true
+		want := tests[index]
+		a := entry.Component.CryptoProperties.AlgorithmProperties
+		if a.AlgorithmFamily != want.family || entry.Component.CryptoProperties.OID != want.oid {
+			t.Errorf("%s: wrong scheme or guessed OID: %+v", want.code, entry.Component.CryptoProperties)
+		}
+		if want.function == "" {
+			if a.CryptoFunctions != nil {
+				t.Errorf("%s inferred encryption/decryption from a constructor", want.code)
+			}
+		} else if a.CryptoFunctions == nil || !slices.Equal(*a.CryptoFunctions, []cdx.CryptoFunction{want.function}) {
+			t.Errorf("%s lost its operation %s", want.code, want.function)
+		}
+	}
+	if len(seen) != len(tests) {
+		t.Errorf("found %d of %d modeled operations", len(seen), len(tests))
+	}
+	if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPythonModelFamiliesAndPublicParameters(t *testing.T) {
 	selection := fixture(t, map[string]string{"app.py": `
 import hashlib

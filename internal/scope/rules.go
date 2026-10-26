@@ -16,7 +16,7 @@ import (
 type Options struct {
 	Exclude            []string
 	IncludeNestedRepos bool
-	Output             string
+	Outputs            []string
 	ClassifyHelm       bool
 	SkipReports        bool
 }

@@ -36,16 +36,18 @@ func asymmetricCall(name string, call value, evidence *inventory.Evidence) (cdx.
 	for _, key := range []struct {
 		module, class, name string
 		primitive           cdx.CryptoPrimitive
-		curve               string
+		family, curve, oid  string
 	}{
-		{"ed25519", "Ed25519PrivateKey", "Ed25519", cdx.CryptoPrimitiveSignature, inventory.CurveID("Ed25519")},
-		{"ed448", "Ed448PrivateKey", "Ed448", cdx.CryptoPrimitiveSignature, ""},
-		{"x25519", "X25519PrivateKey", "X25519", cdx.CryptoPrimitiveKeyAgree, inventory.CurveID("X25519")},
-		{"x448", "X448PrivateKey", "X448", cdx.CryptoPrimitiveKeyAgree, ""},
+		{"ed25519", "Ed25519PrivateKey", "Ed25519", cdx.CryptoPrimitiveSignature, "EdDSA", inventory.CurveID("Ed25519"), inventory.OIDEd25519},
+		{"ed448", "Ed448PrivateKey", "Ed448", cdx.CryptoPrimitiveSignature, "EdDSA", inventory.CurveID("Ed448"), inventory.OIDEd448},
+		{"x25519", "X25519PrivateKey", "X25519", cdx.CryptoPrimitiveKeyAgree, "ECDH", inventory.CurveID("X25519"), inventory.OIDX25519},
+		{"x448", "X448PrivateKey", "X448", cdx.CryptoPrimitiveKeyAgree, "ECDH", inventory.CurveID("X448"), inventory.OIDX448},
 	} {
 		if short == key.module+"."+key.class+".generate" {
 			component := algorithm(key.name, key.primitive, cdx.CryptoFunctionKeygen)
 			component.CryptoProperties.AlgorithmProperties.EllipticCurve = key.curve
+			component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = key.family
+			component.CryptoProperties.OID = key.oid
 			return component, true
 		}
 	}
@@ -73,6 +75,19 @@ func asymmetricCall(name string, call value, evidence *inventory.Evidence) (cdx.
 				primitive = cdx.CryptoPrimitivePKE
 			}
 			component := algorithm(key.label, primitive, operation(method))
+			switch key.label {
+			case "RSA":
+				rsaScheme(&component, call, method)
+			case "ECDSA":
+				component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "ECDSA"
+			case "Ed25519", "Ed448":
+				component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "EdDSA"
+				component.CryptoProperties.AlgorithmProperties.EllipticCurve = inventory.CurveID(key.label)
+				component.CryptoProperties.OID = inventory.OIDEd25519
+				if key.label == "Ed448" {
+					component.CryptoProperties.OID = inventory.OIDEd448
+				}
+			}
 			if key.label == "RSA" && (method == "sign" || method == "verify") {
 				index := 2
 				if method == "verify" {
@@ -88,6 +103,34 @@ func asymmetricCall(name string, call value, evidence *inventory.Evidence) (cdx.
 		}
 	}
 	return cdx.Component{}, false
+}
+
+func rsaScheme(component *cdx.Component, call value, method string) {
+	index := 1
+	if method == "verify" {
+		index = 2
+	}
+	padding := argument(call, index, "padding")
+	if padding.Kind != "call" {
+		return
+	}
+	a := component.CryptoProperties.AlgorithmProperties
+	switch symbol(padding.Base) {
+	case primitives + "asymmetric.padding.PKCS1v15":
+		a.AlgorithmFamily, a.Padding = "RSASSA-PKCS1", cdx.CryptoPaddingPKCS1v15
+		if a.Primitive == cdx.CryptoPrimitivePKE {
+			a.AlgorithmFamily = "RSAES-PKCS1"
+		}
+	case primitives + "asymmetric.padding.PSS":
+		if a.Primitive == cdx.CryptoPrimitiveSignature {
+			a.AlgorithmFamily, component.CryptoProperties.OID = "RSASSA-PSS", inventory.OIDRSASSAPSS
+		}
+	case primitives + "asymmetric.padding.OAEP":
+		if a.Primitive == cdx.CryptoPrimitivePKE {
+			a.AlgorithmFamily, a.Padding = "RSAES-OAEP", cdx.CryptoPaddingOAEP
+			component.CryptoProperties.OID = inventory.OIDRSAESOAEP
+		}
+	}
 }
 
 func setCurve(component *cdx.Component, evidence *inventory.Evidence, v value) {

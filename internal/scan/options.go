@@ -167,7 +167,7 @@ func (o Options) additionalRequests(selected []string) []Request {
 }
 
 // Prepare validates and discovers all passive input work without running analyzers or probes.
-func (o Options) Prepare(ctx context.Context, output string) (Plan, error) {
+func (o Options) Prepare(ctx context.Context, outputs ...string) (Plan, error) {
 	if err := o.validate(); err != nil {
 		return Plan{}, err
 	}
@@ -178,5 +178,5 @@ func (o Options) Prepare(ctx context.Context, output string) (Plan, error) {
 	if !slices.Contains(selected, "go") && (o.GOOS != "" || o.GOARCH != "" || o.Tags != "") {
 		return Plan{}, errors.New("Go build options require the go analyzer")
 	}
-	return o.prepare(ctx, output, selected)
+	return o.prepare(ctx, outputs, selected)
 }

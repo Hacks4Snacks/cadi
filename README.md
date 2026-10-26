@@ -93,6 +93,18 @@ that option still controls the JSON inventory. Partial collections are labeled
 `INCOMPLETE`, and an empty summary does not establish absence of cryptography.
 Control characters in table cells are escaped.
 
+For detailed execution and reproducibility information, write a separate scan
+report:
+
+```sh
+./bin/ciphertrail scan . --output cbom.json --scan-report scan-report.json
+```
+
+`--scan-report` requires a file path; it does not replace the CBOM or use stdout.
+It is optional and is independent of `--summary` and `--include-dependencies`.
+Current output paths and recognized previous scan reports are excluded from
+repository discovery.
+
 ## Crypto-focused output
 
 By default, the report contains:
@@ -132,11 +144,54 @@ To include the full collected software/dependency inventory instead:
 Both modes use the same collectors and preserve crypto asset references,
 evidence, errors, and uncertainty. Only the exported component/relationship
 scope changes. A default scan with no discovered cryptographic assets can
-contain no components; its collection context and diagnostics remain in
-metadata. Go binary build information alone establishes dependency presence,
+contain no components; concise execution/coverage qualifications remain in its
+header, with detailed context available in the optional scan report and CLI
+diagnostics. Go binary build information alone establishes dependency presence,
 not cryptographic use, so use `--include-dependencies` to export that inventory.
 Neither omitted software nor an empty crypto inventory proves absence of
 cryptography.
+
+## Native algorithm facts
+
+Recognized API and material models emit known facts directly into CycloneDX 1.7
+`cryptoProperties.algorithmProperties`, rather than reconstructing them from
+display names during export:
+
+- `algorithmFamily` uses the schema's registered family identifiers. A generic
+  RSA key does not establish RSAES-OAEP, RSAES-PKCS1, RSASSA-PKCS1, or RSASSA-PSS;
+  those families require an explicit operation or signature scheme. Families
+  absent from the schema, including scrypt and Argon2, are not invented.
+- `parameterSetIdentifier` is algorithm-specific: SHA-256 records digest length
+  `256`, SHAKE128 records its `128` parameter rather than its requested output
+  length, and a known RSA or AES key length remains a key-size parameter.
+  HMAC's digest selection does not establish its key length. Variable BLAKE2
+  output lengths are recorded when explicit, without assuming library defaults.
+- `cryptoFunctions` records modeled cryptographic purpose, including digest,
+  tag, key generation/derivation, signing/verification, encryption/decryption,
+  random generation, and KEM encapsulation/decapsulation. This is not proof of
+  execution. Public-key presence and generic cipher constructors do not invent
+  an encrypt/decrypt/sign operation.
+
+Known OIDs are emitted in `cryptoProperties.oid`. The bounded mappings cover
+fixed hashes, supported SHA-2/SHA-3 HMAC identities, resolved AES mode/key-size
+combinations, explicit RSA-OAEP/PSS schemes, Ed25519/Ed448 and X25519/X448
+identities, ML-KEM parameter sets, and recognized X.509 signature algorithms.
+Mappings follow the [NIST CSOR](https://csrc.nist.gov/projects/computer-security-objects-register/algorithm-registration),
+[RFC 4231](https://www.rfc-editor.org/rfc/rfc4231),
+[RFC 8017](https://www.rfc-editor.org/rfc/rfc8017), and
+[RFC 8410](https://www.rfc-editor.org/rfc/rfc8410).
+An OID is an algorithm identifier, not evidence that unresolved parameters or an
+operation are valid. Generic algorithms, unknown keys/modes, unsupported OID
+variants, and opaque signature options remain unqualified.
+
+Formats such as PKCS#10 do not by themselves establish a signing algorithm.
+No execution backend, certification, classical security strength, or
+post-quantum security level is inferred by this enrichment.
+
+These native fields are the same in crypto-focused and full-dependency output.
+Rescan to enrich an existing CBOM. References derived from component metadata can
+change when facts are added; consolidation rules and reference consistency are
+preserved.
 
 ## Go analysis
 
@@ -218,9 +273,8 @@ do not create fictitious cryptographic assets.
 | `ssh.Session.StdinPipe/StdoutPipe/StderrPipe`             | Stream accessors; no new asset                                     |
 | `rsa.PublicKey.Equal`                                   | Public-key identity comparison; no new asset                        |
 
-The static-analysis scope reminder is retained in the CBOM as
-`ciphertrail:analysis-scope` in collection properties and on retained scanned Go
-modules, rather than printed on every successful scan. Unknown parameters remain
+Static-analysis boundaries are documented here rather than repeated as generic
+scope boilerplate in every CBOM or scanned module. Unknown parameters remain
 internal analysis facts; their values and per-parameter unresolved lists are
 omitted from the CBOM rather than replaced with placeholders.
 There is no
@@ -342,8 +396,8 @@ For a one-off scan, use repeatable `--exclude` options:
 ```
 
 File and CLI exclusions are combined, normalized, and recorded with omissions,
-chart roots, and deduplication counts in the collection's `ciphertrail:scope`
-property. Paths are anchored to each directory root and match complete path
+chart roots, and deduplication counts in the scan report's structured `scope`
+detail. Paths are anchored to each directory root and match complete path
 segments; `internal/testutil` does
 not exclude `internal/testutilities` or `production/testutil`. Blank lines and
 lines beginning with `#` are ignored. Glob patterns, negation, absolute paths,
@@ -434,12 +488,12 @@ that the cryptographic analyzer rejected an algorithm. Checksum, module-metadata
 syntax, and type-checking failures are reported separately.
 
 The complete list of affected packages, positions, module directories, cause
-categories, and preparation hints is retained in collection properties as
-`ciphertrail:package-load-errors`. Arbitrary compiler messages are not copied
+categories, and preparation hints is retained in the scan report's
+`package-load-errors` detail. Arbitrary compiler messages are not copied
 into reports because they can contain source literals or credential-bearing
 URLs. Unclassified failures direct you to the module's normal Go build/list
-diagnostics. Collection properties record `ciphertrail:dependency-mode` and
-`ciphertrail:dependency-preparation` outcomes. Preparation metadata does not
+diagnostics. Scan-report details record `dependency-mode`,
+`dependency-preparation`, and the structured Go `build-context`. Preparation metadata does not
 include credentials or proxy URLs.
 
 Loading packages can invoke the local Go compiler and native build tools to
@@ -544,7 +598,7 @@ boundaries honored by discovery keep analysis separate. Only selected files part
 grouping does not discover additional files or bypass exclusions.
 
 When multiple inputs contribute distinct files to a shared analysis, their
-collection metadata retains `ciphertrail:python-analysis-target` pointing to a
+scan-report metadata retains `python-analysis-target` pointing to a
 `python` collection at that root. Participating inputs show `deduplicated`
 Python coverage; inspected-file counts, findings, and any analysis failure are
 reported once in the shared collection. Overlapping selections still parse each
@@ -560,7 +614,7 @@ but are not exported as lists or unknown-value placeholders.
 Every finding retains its Python source location, line, and resolved API symbol.
 Provider links identify import namespaces, not installed distributions or
 versions: in particular, `Crypto` does not uniquely identify PyCryptodome.
-The frontend interpreter version is collection metadata, not the target runtime
+The frontend interpreter version is scan-report metadata, not the target runtime
 version. Python dependency manifests and lockfiles are not an installed-package
 inventory.
 
@@ -573,7 +627,8 @@ Parsing is bounded to 8 MiB per source file, 100,000 AST nodes, 32 expression
 levels, 200,000 resolved value visits, 64 arguments per call, and a 16 MiB frontend
 response. Each file has a 10-second frontend deadline and supports cancellation.
 Syntax, source-encoding, interpreter, and resource-limit errors are operational
-failures: successful files remain in the partial CBOM with failed coverage.
+failures: successful files remain in the partial CBOM, with detailed failed
+coverage in the scan report and stderr.
 The host interpreter must understand the selected source syntax; Python 3.10 is
 the frontend minimum, not a promise that it parses every newer Python release.
 Stubs, notebooks, bytecode, Python embedded in YAML or shell, and source analysis
@@ -784,17 +839,17 @@ Parsing is bounded to 16 MiB per document payload, eight decoded embedding level
 100,000-node budget per input file. Duplicate mapping keys are rejected; YAML
 aliases and merge keys are explicitly unsupported. Parser error messages do not
 include raw input snippets. Top-level unsupported Kubernetes kinds produce
-coverage notes; unrelated embedded kinds are summarized in collection metadata.
+coverage notes; unrelated embedded kinds are retained in scan-report details.
 Neither is treated as discovered cryptography. This is configuration inventory,
 not a Kubernetes validator, policy engine, or live-cluster scanner.
 
 ## Output and exit behavior
 
-Every generated report is validated against bundled CycloneDX 1.7 JSON Schemas,
+Every generated CBOM is validated against bundled CycloneDX 1.7 JSON Schemas,
 without network access. Standard `cryptoProperties`, software dependencies, and
 evidence occurrences carry the inventory. Each native occurrence has a stable,
 BOM-wide unique `bom-ref`; its location, line, and symbol are recorded only there.
-Namespaced properties add:
+Per-component namespaced properties add:
 
 - `ciphertrail:evidence-kind` and `ciphertrail:collector`: flat classification
   and collector fields when every evidence record for a component is simple
@@ -807,13 +862,6 @@ Namespaced properties add:
   their names, values, and definition locations. Definition locations describe
   parameter origins, not duplicate copies of the asset's use site. Structured
   inputs also carry optional document/field/embedded-file `context`.
-- `ciphertrail:collection`: requested target, outcome, collector properties
-  (including Go build context, analysis scope, and detailed package-load
-  problems), errors, limitations, and typed analyzer `coverage`.
-- `ciphertrail:collection-status`: whether the requested collectors succeeded.
-- `ciphertrail:output-scope`: `crypto-focused` or `full-dependencies`.
-- `ciphertrail:omitted-components`: number of collected components excluded by
-  the output scope.
 - Resolved public parameters and qualified `:declared` alternatives. Missing
   parameters are not replaced with invented values or defaults.
 
@@ -840,19 +888,54 @@ Detailed supplemental provenance is associated with its own occurrence, so
 declarations and observations from different locations remain distinct.
 Evidence without a location remains component-scoped; no occurrence is invented,
 and a symbol is retained in supplemental provenance if one was supplied.
-Repeated generic source-analysis caveats belong to collection scope metadata.
+Repeated generic source-analysis caveats belong in versioned documentation.
 
-Each coverage record identifies its analyzer, status, inspected files/modules,
+The CBOM header retains native generation time and scanner identity, plus only:
+
+- `ciphertrail:collection-status`: `succeeded` or `incomplete` execution.
+- `ciphertrail:output-scope`: `crypto-focused` or `full-dependencies`.
+- `ciphertrail:coverage-limitation`, when needed: concise qualifications such as
+  rendering required, failed analysis, or analysis diagnostics being reported.
+
+It does not contain serialized collection payloads, omission counters, absolute
+input targets, build-context dumps, diagnostic lists, or generic scope prose.
+Successful execution is not a claim of exhaustive coverage or secure cryptography.
+Both inventory modes use this same compact metadata contract.
+
+Scanner identity uses an explicit release version when supplied. Otherwise,
+available Go module/VCS build information supplies the version, including a
+revision and dirty-worktree marker for development builds. `dev` is used only
+when no more precise identity is available. CLI `version`, CBOM, and scan report
+use the same identity; parser/compiler versions are not target-runtime claims.
+
+### Separate scan report
+
+The optional JSON artifact has `reportFormat: "CipherTrailScanReport"` and
+`reportVersion: 1`. It contains scanner identity/time, output scope/status,
+component statistics, and a `collections` array with per-input target, outcome,
+errors, diagnostics, coverage, and structured `details`.
+
+Metadata values are supplied as typed values by collectors. Arrays and objects,
+such as exclusions and Go build context, remain JSON arrays/objects; the report
+does not guess structure from strings that happen to resemble JSON.
+Component statistics distinguish collected, exported, omitted, and cryptographic
+components. Collection and CBOM-output failures are recorded when a report path
+was requested; a failed report write still returns an operational error.
+Use `--scan-report` in pipelines when detailed audit/reproduction information
+must accompany the CBOM.
+
+Each report coverage record identifies its analyzer, status, inspected files/modules,
 cryptographic finding count, skipped inputs, and any preparation reason.
 Statuses distinguish `completed`, `failed`, `not-applicable`, `needs-rendering`,
-and `deduplicated`. A completed analyzer can still have skipped templates or
-unmodeled APIs; its counts and detailed diagnostics do not imply exhaustive
+and `deduplicated`. A file analyzer requiring rendered inputs reports
+`needs-rendering` even if other files produced findings. Counts and detailed
+diagnostics do not imply exhaustive
 cryptographic coverage. Source build-context options require the `go` analyzer.
 
 Stderr contains one coverage summary per input. Identical diagnostic messages
-are grouped with an occurrence count; every original location remains in the
-CBOM. Exclusions and recognized report files are listed in `ciphertrail:scope`,
-not printed as hundreds of individual notes.
+are grouped with an occurrence count; every original diagnostic location is
+available in the scan report. Exclusions and recognized report files are listed
+in its `scope` detail, not printed as hundreds of individual notes.
 
 For simple source evidence, the component properties are:
 
@@ -922,10 +1005,12 @@ When one collector fails, successfully collected evidence is retained in a
 schema-valid partial report and the command exits 1. No algorithm choice,
 certificate expiry, or key size causes a policy exit.
 
-Named output files are written atomically with owner-only permissions.
+Named CBOM and scan-report output files are written atomically with owner-only permissions.
 CipherTrail refuses to overwrite explicit inputs, credentials, symlinks,
-special files, or unrelated existing files. It can replace a previous
-CipherTrail CBOM, provided that file did not change during collection.
+special files, the other output, or unrelated existing files. Each output can
+replace only a previous CipherTrail artifact of the same format, provided that
+file did not change during collection. The two writes are individually atomic,
+not a multi-file transaction; failure of either returns exit 1.
 Shell redirection is outside these protections: never redirect stdout onto an
 input file.
 
@@ -966,7 +1051,8 @@ separate boundaries:
   metadata parsing, reused by file, manifest, image, and runtime collection.
 - [`internal/probe`](internal/probe): explicitly authorized TLS/SSH interrogation.
 - [`internal/scan`](internal/scan): validated requests, built-in composition,
-  normalized/deduplicated planning, execution, cancellation, and coverage.
+  normalized/deduplicated planning, execution, cancellation, coverage, and
+  structured execution reports.
 - [`internal/inventory`](internal/inventory): evidence, ownership, relationships,
   stable references, and reusable configuration constructors.
 - [`internal/export/cyclonedx`](internal/export/cyclonedx): graph selection,

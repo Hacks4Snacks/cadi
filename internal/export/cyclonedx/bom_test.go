@@ -12,6 +12,115 @@ import (
 	cdx "github.com/CycloneDX/cyclonedx-go"
 )
 
+func TestKnownHashFactsUseNativeFields(t *testing.T) {
+	var result inventory.Result
+	for _, test := range []struct {
+		name, family, parameter, oid string
+	}{
+		{"MD5", "MD5", "128", "1.2.840.113549.2.5"},
+		{"SHA-1", "SHA-1", "160", "1.3.14.3.2.26"},
+		{"SHA-224", "SHA-2", "224", "2.16.840.1.101.3.4.2.4"},
+		{"SHA-256", "SHA-2", "256", "2.16.840.1.101.3.4.2.1"},
+		{"SHA-384", "SHA-2", "384", "2.16.840.1.101.3.4.2.2"},
+		{"SHA-512", "SHA-2", "512", "2.16.840.1.101.3.4.2.3"},
+		{"SHA-512/224", "SHA-2", "224", "2.16.840.1.101.3.4.2.5"},
+		{"SHA-512/256", "SHA-2", "256", "2.16.840.1.101.3.4.2.6"},
+		{"SHA3-224", "SHA-3", "224", "2.16.840.1.101.3.4.2.7"},
+		{"SHA3-256", "SHA-3", "256", "2.16.840.1.101.3.4.2.8"},
+		{"SHA3-384", "SHA-3", "384", "2.16.840.1.101.3.4.2.9"},
+		{"SHA3-512", "SHA-3", "512", "2.16.840.1.101.3.4.2.10"},
+		{"SHAKE128", "SHA-3", "128", "2.16.840.1.101.3.4.2.11"},
+		{"SHAKE256", "SHA-3", "256", "2.16.840.1.101.3.4.2.12"},
+		{"BLAKE2b", "BLAKE2", "", ""},
+		{"BLAKE2s", "BLAKE2", "", ""},
+		{"BLAKE2b-256", "BLAKE2", "256", ""},
+		{"BLAKE2b-384", "BLAKE2", "384", ""},
+		{"BLAKE2b-512", "BLAKE2", "512", ""},
+		{"BLAKE2s-128", "BLAKE2", "128", ""},
+		{"BLAKE2s-256", "BLAKE2", "256", ""},
+	} {
+		component, known := inventory.HashAlgorithm(test.name)
+		if !known {
+			t.Fatalf("missing modeled hash %s", test.name)
+		}
+		a := component.CryptoProperties.AlgorithmProperties
+		if a.AlgorithmFamily != test.family || a.ParameterSetIdentifier != test.parameter ||
+			component.CryptoProperties.OID != test.oid || a.CryptoFunctions == nil ||
+			!reflect.DeepEqual(*a.CryptoFunctions, []cdx.CryptoFunction{cdx.CryptoFunctionDigest}) {
+			t.Fatalf("%s lost native hash facts: %+v", test.name, component.CryptoProperties)
+		}
+		if a.ClassicalSecurityLevel != nil || a.NistQuantumSecurityLevel != nil ||
+			a.CertificationLevel != nil || component.Properties != nil {
+			t.Fatalf("%s has inferred policy or duplicate extension facts", test.name)
+		}
+		result.Add(component, inventory.Evidence{Kind: "configured", Collector: "fixture", Location: "hash.go", Line: 1}, "")
+	}
+	for _, full := range []bool{false, true} {
+		bom := encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{IncludeDependencies: full})
+		if len(*bom.Components) != len(result.Entries) {
+			t.Fatal("native enrichment changed the retained hash inventory")
+		}
+	}
+	for _, name := range []string{"", "RSA", "SHA-256-like", "HMAC-SHA-256"} {
+		if _, known := inventory.HashAlgorithm(name); known {
+			t.Fatalf("unmodeled identity was guessed: %q", name)
+		}
+	}
+	generic := inventory.Algorithm("SHA-256", cdx.CryptoPrimitiveHash)
+	if generic.CryptoProperties.OID != "" || generic.CryptoProperties.AlgorithmProperties.AlgorithmFamily != "" {
+		t.Fatal("the generic constructor interpreted a display name")
+	}
+	first, _ := inventory.HashAlgorithm("SHA-256")
+	*first.CryptoProperties.AlgorithmProperties.CryptoFunctions = []cdx.CryptoFunction{cdx.CryptoFunctionVerify}
+	second, _ := inventory.HashAlgorithm("SHA-256")
+	if (*second.CryptoProperties.AlgorithmProperties.CryptoFunctions)[0] != cdx.CryptoFunctionDigest {
+		t.Fatal("mutable component fields escaped into shared model definitions")
+	}
+}
+
+func TestNativeHMACAndAESFactsPreserveUnknowns(t *testing.T) {
+	var result inventory.Result
+	for _, test := range []struct{ hash, oid string }{
+		{"SHA-256", "1.2.840.113549.2.9"}, {"SHA3-256", "2.16.840.1.101.3.4.2.14"},
+		{"BLAKE2b", ""}, {"", ""},
+	} {
+		component := inventory.HMACAlgorithm(test.hash)
+		a := component.CryptoProperties.AlgorithmProperties
+		if a.AlgorithmFamily != "HMAC" || a.ParameterSetIdentifier != "" ||
+			component.CryptoProperties.OID != test.oid || a.CryptoFunctions == nil ||
+			!reflect.DeepEqual(*a.CryptoFunctions, []cdx.CryptoFunction{cdx.CryptoFunctionTag}) {
+			t.Fatal("HMAC digest identity was lost or mistaken for a key length")
+		}
+		result.Add(component, inventory.Evidence{Kind: "configured"}, "")
+	}
+	for _, test := range []struct {
+		mode           cdx.CryptoAlgorithmMode
+		parameter, oid string
+	}{
+		{cdx.CryptoAlgorithmModeECB, "128", "2.16.840.1.101.3.4.1.1"},
+		{cdx.CryptoAlgorithmModeCBC, "128", "2.16.840.1.101.3.4.1.2"},
+		{cdx.CryptoAlgorithmModeOFB, "192", "2.16.840.1.101.3.4.1.23"},
+		{cdx.CryptoAlgorithmModeCFB, "256", "2.16.840.1.101.3.4.1.44"},
+		{cdx.CryptoAlgorithmModeGCM, "256", "2.16.840.1.101.3.4.1.46"},
+		{cdx.CryptoAlgorithmModeCCM, "192", "2.16.840.1.101.3.4.1.27"},
+		{"", "256", ""}, {cdx.CryptoAlgorithmModeGCM, "", ""},
+		{cdx.CryptoAlgorithmModeGCM, "255", ""}, {cdx.CryptoAlgorithmModeCTR, "256", ""},
+	} {
+		if oid := inventory.AESOID(test.mode, test.parameter); oid != test.oid {
+			t.Errorf("AES %s/%s OID=%q; want %q", test.mode, test.parameter, oid, test.oid)
+		}
+	}
+	for _, provider := range []string{"aesgcm", "aescbc", "secretbox"} {
+		component, known := inventory.ConfiguredEncryptionAlgorithm(provider, true, nil)
+		if !known || component.CryptoProperties.AlgorithmProperties.AlgorithmFamily == "" ||
+			component.CryptoProperties.OID != "" || component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier != "" {
+			t.Fatalf("%s lost its family or invented a key size/OID", provider)
+		}
+		result.Add(component, inventory.Evidence{Kind: "configured"}, "")
+	}
+	encodeForTest(t, []inventory.Collection{{Result: result}}, EncodeOptions{})
+}
+
 func TestEncodeStableReferencesAndEvidence(t *testing.T) {
 	evidence := inventory.Evidence{
 		Kind: "configured", Collector: "go", Location: "main.go", Line: 12, Symbol: "crypto/rsa.GenerateKey",
@@ -497,6 +606,41 @@ func TestContextProjectionKeepsLocatorsNotResourceMetadata(t *testing.T) {
 	}
 }
 
+func TestCBOMHeaderIsCompactAndDoesNotSerializeRunDetails(t *testing.T) {
+	var result inventory.Result
+	result.Metadata("execution-detail", strings.Repeat("RUN_DETAIL_SENTINEL", 10000))
+	result.Diagnostics = []inventory.Diagnostic{{Location: "/private/worktree/source.go", Message: "DIAGNOSTIC_SENTINEL"}}
+	result.Coverage = []inventory.Coverage{
+		{Analyzer: "kubernetes", Status: "needs-rendering", Skipped: 295, Reason: "Helm templates require rendered YAML/JSON"},
+	}
+	result.Add(inventory.Algorithm("RSA", cdx.CryptoPrimitivePKE),
+		inventory.Evidence{Kind: "configured", Collector: "go", Location: "main.go", Line: 1}, "")
+	for _, full := range []bool{false, true} {
+		bom := encodeForTest(t, []inventory.Collection{{Collector: "repository", Target: "/private/worktree", Result: result}},
+			EncodeOptions{IncludeDependencies: full})
+		header, err := json.Marshal(bom.Metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(header) > 1024 || strings.Contains(string(header), "SENTINEL") || strings.Contains(string(header), "/private/worktree") {
+			t.Fatalf("CBOM header contains execution details: %d bytes", len(header))
+		}
+		limited := false
+		for _, property := range *bom.Metadata.Properties {
+			switch property.Name {
+			case "ciphertrail:output-scope", "ciphertrail:collection-status":
+			case "ciphertrail:coverage-limitation":
+				limited = limited || strings.Contains(property.Value, "render")
+			default:
+				t.Fatalf("unexpected CBOM header property: %s", property.Name)
+			}
+		}
+		if !limited {
+			t.Fatal("material rendering limitation disappeared with run metadata")
+		}
+	}
+}
+
 func TestFailureBeforeAnyFindingsStillProducesValidPartialBOM(t *testing.T) {
 	data, err := Encode([]inventory.Collection{{Collector: "tls", Target: "localhost:443", Err: errors.New("connection failed")}})
 	if err != nil {
@@ -720,7 +864,7 @@ func TestFocusedExportPreservesCryptoReferencesAndSharedOwnership(t *testing.T) 
 func TestFocusedEmptyReportPreservesScopeAndErrors(t *testing.T) {
 	var result inventory.Result
 	result.Add(cdx.Component{Type: "library", Name: "unrelated"}, inventory.Evidence{Kind: "present"}, "")
-	result.Properties = []cdx.Property{{Name: "ciphertrail:analysis-scope", Value: "configured, not executed"}}
+	result.Metadata("analysis-scope", "configured, not executed")
 	result.Diagnostics = []inventory.Diagnostic{{Message: "unmodeled API", Location: "main.go", Line: 3}}
 	collections := []inventory.Collection{{Collector: "go", Target: ".", Result: result, Err: errors.New("load failed")}}
 	bom := encodeForTest(t, collections, EncodeOptions{})
@@ -731,9 +875,14 @@ func TestFocusedEmptyReportPreservesScopeAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"configured, not executed", "unmodeled API", "load failed", "incomplete", "crypto-focused"} {
+	for _, value := range []string{"incomplete", "crypto-focused", "analysis diagnostics were reported"} {
 		if !strings.Contains(string(data), value) {
 			t.Errorf("lost collection context %q", value)
+		}
+	}
+	for _, value := range []string{"configured, not executed", "unmodeled API", "load failed", "ciphertrail:collection\""} {
+		if strings.Contains(string(data), value) {
+			t.Errorf("execution details leaked into the CBOM header: %q", value)
 		}
 	}
 	full := encodeForTest(t, collections, EncodeOptions{IncludeDependencies: true})

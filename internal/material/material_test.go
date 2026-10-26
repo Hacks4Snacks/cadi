@@ -2,8 +2,10 @@ package material
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"reflect"
 	"testing"
 
 	"ciphertrail/internal/export/cyclonedx"
@@ -44,7 +46,8 @@ func TestParseCertificateAndPrivateKeyWithoutSecrets(t *testing.T) {
 					len(*certificate.RelatedCryptographicAssets) == 2
 			}
 			if algorithm := p.AlgorithmProperties; algorithm != nil && component.Name == "ECDSA" {
-				if algorithm.Curve != "" || algorithm.EllipticCurve != "nist/P-256" {
+				if algorithm.Curve != "" || algorithm.EllipticCurve != "nist/P-256" || algorithm.AlgorithmFamily != "ECDSA" ||
+					algorithm.CryptoFunctions != nil || p.OID != "" {
 					t.Fatal("canonical 1.7 curve metadata was not emitted")
 				}
 			}
@@ -56,6 +59,39 @@ func TestParseCertificateAndPrivateKeyWithoutSecrets(t *testing.T) {
 	}
 	if !certificateFound || !privateKeyFound {
 		t.Fatal("missing certificate or key parameters")
+	}
+}
+
+func TestCertificateSignatureNativeFacts(t *testing.T) {
+	for _, test := range []struct {
+		identity    x509.SignatureAlgorithm
+		family, oid string
+	}{
+		{x509.SHA384WithRSA, "RSASSA-PKCS1", "1.2.840.113549.1.1.12"},
+		{x509.SHA256WithRSAPSS, "RSASSA-PSS", "1.2.840.113549.1.1.10"},
+		{x509.ECDSAWithSHA256, "ECDSA", "1.2.840.10045.4.3.2"},
+		{x509.PureEd25519, "EdDSA", "1.3.101.112"},
+		{x509.UnknownSignatureAlgorithm, "", ""},
+	} {
+		t.Run(test.identity.String(), func(t *testing.T) {
+			component := signatureAlgorithm(test.identity)
+			a := component.CryptoProperties.AlgorithmProperties
+			if a.AlgorithmFamily != test.family || component.CryptoProperties.OID != test.oid || a.ParameterSetIdentifier != "" {
+				t.Fatalf("signature identity was lost or issuer key size invented: %+v", component.CryptoProperties)
+			}
+			if test.identity == x509.UnknownSignatureAlgorithm {
+				if a.CryptoFunctions != nil {
+					t.Fatal("unknown signature algorithm was enriched")
+				}
+			} else if a.CryptoFunctions == nil || !reflect.DeepEqual(*a.CryptoFunctions, []cdx.CryptoFunction{cdx.CryptoFunctionSign}) {
+				t.Fatal("signature purpose missing")
+			}
+			var result inventory.Result
+			result.Add(component, inventory.Evidence{Kind: "present"}, "")
+			if _, err := cyclonedx.Encode([]inventory.Collection{{Result: result}}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

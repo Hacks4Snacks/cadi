@@ -36,8 +36,6 @@ type Source struct {
 	Selection          *scope.Selection
 }
 
-const analysisScope = "source evidence describes configured call sites and declarations, not runtime execution; only documented APIs and bounded value flows are modeled; material contents, issuance, operation success, negotiation, subsequent mutations, and implicit defaults are not established"
-
 // Collect accounts for each discovered module and returns partial evidence with any load failure.
 func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr error) {
 	modulesRun, goFiles := 0, 0
@@ -54,20 +52,16 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		}
 		result.Coverage = append(result.Coverage, inventory.Coverage{Analyzer: "go", Status: status, Modules: modulesRun, Files: goFiles, Findings: len(refs)})
 	}()
-	result = inventory.Result{Properties: []cdx.Property{
-		{Name: "ciphertrail:analysis-scope", Value: analysisScope},
-		{Name: "ciphertrail:source-exclusions", Value: "test files; vendor; testdata; hidden directories; node_modules"},
-	}}
 	repositoryScope := "explicit-roots"
 	if s.IncludeNestedRepos {
 		repositoryScope = "recursive"
 	}
-	result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:nested-repository-scope", Value: repositoryScope})
+	result.Metadata("nested-repository-scope", repositoryScope)
 	dependencyMode := "automatic"
 	if s.Offline {
 		dependencyMode = "offline"
 	}
-	result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:dependency-mode", Value: dependencyMode})
+	result.Metadata("dependency-mode", dependencyMode)
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -95,11 +89,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		selection = &discovered
 	}
 	if len(selection.Exclusions) > 0 {
-		data, err := json.Marshal(selection.Exclusions)
-		if err != nil {
-			return result, fmt.Errorf("encode source exclusion scope: %w", err)
-		}
-		result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:source-exclusion-paths", Value: string(data)})
+		result.Metadata("source-exclusion-paths", selection.Exclusions)
 	}
 	modules := selection.Modules
 	var nestedRepositories []string
@@ -109,11 +99,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		}
 	}
 	if len(nestedRepositories) > 0 {
-		data, encodeErr := json.Marshal(nestedRepositories)
-		if encodeErr != nil {
-			return result, fmt.Errorf("encode repository boundary scope: %w", encodeErr)
-		}
-		result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:excluded-nested-repositories", Value: string(data)})
+		result.Metadata("excluded-nested-repositories", nestedRepositories)
 	}
 	if len(modules) == 0 {
 		if len(nestedRepositories) > 0 {
@@ -133,11 +119,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 		return result, fmt.Errorf("decode Go build context: %w", err)
 	}
 	build["tags"] = s.Tags
-	encodedBuild, err := json.Marshal(build)
-	if err != nil {
-		return result, err
-	}
-	result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:build-context", Value: string(encodedBuild)})
+	result.Metadata("build-context", build)
 	var failures error
 	selected := make(map[string]bool, len(selection.Files))
 	for _, file := range selection.Files {
@@ -151,7 +133,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 			return result, errors.Join(failures, err)
 		}
 		modulesRun++
-		partial, err := s.scanModule(ctx, root, module, env, string(encodedBuild), build["GOVERSION"], selected)
+		partial, err := s.scanModule(ctx, root, module, env, build["GOVERSION"], selected)
 		result.Merge(partial)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("%s: %w", relative(root, module), err))
@@ -160,7 +142,7 @@ func (s Source) Collect(ctx context.Context) (result inventory.Result, returnErr
 	return result, failures
 }
 
-func (s Source) scanModule(ctx context.Context, root, directory string, env []string, build, version string, selected map[string]bool) (result inventory.Result, returnErr error) {
+func (s Source) scanModule(ctx context.Context, root, directory string, env []string, version string, selected map[string]bool) (result inventory.Result, returnErr error) {
 	var exclusions []string
 	excludedFiles := map[string]bool{}
 	files, err := isolateModuleFiles(ctx, directory, env)
@@ -225,15 +207,11 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 		if preparationErr != nil {
 			status = "failed"
 		}
-		details, encodeErr := json.Marshal(struct {
+		result.Metadata("dependency-preparation", struct {
 			Module  string `json:"module"`
 			Status  string `json:"status"`
 			Offline bool   `json:"offline"`
 		}{Module: relative(root, directory), Status: status, Offline: s.Offline})
-		if encodeErr != nil {
-			return nil, encodeErr
-		}
-		result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:dependency-preparation", Value: string(details)})
 		if preparationErr != nil {
 			return loaded, preparationErr
 		}
@@ -264,11 +242,6 @@ func (s Source) scanModule(ctx context.Context, root, directory string, env []st
 			component = moduleComponent(pkg.Module)
 		}
 		component.BOMRef = inventory.Ref("go-software", component.Name, component.Version, moduleIdentity(pkg.Module))
-		if pkg.Module != nil && pkg.Module.Main {
-			inventory.Property(&component, "build-context", build)
-			inventory.Property(&component, "source-exclusions", "test files; vendor; testdata; hidden directories; node_modules")
-			inventory.Property(&component, "analysis-scope", analysisScope)
-		}
 		evidence := inventory.Evidence{
 			Kind: "present", Collector: "go", Location: relative(root, filepath.Join(directory, "go.mod")),
 		}
@@ -462,11 +435,7 @@ func reportLoadProblems(result *inventory.Result, module string, problems []load
 		return strings.Compare(a.Package+"\x00"+a.Position+"\x00"+a.Kind+"\x00"+a.Cause, b.Package+"\x00"+b.Position+"\x00"+b.Kind+"\x00"+b.Cause)
 	})
 	problems = slices.Compact(problems)
-	data, err := json.Marshal(problems)
-	if err != nil {
-		return fmt.Errorf("encode package-load diagnostics: %w", err)
-	}
-	result.Properties = append(result.Properties, cdx.Property{Name: "ciphertrail:package-load-errors", Value: string(data)})
+	result.Metadata("package-load-errors", problems)
 	groups := map[string][]loadProblem{}
 	var causes []string
 	for _, problem := range problems {

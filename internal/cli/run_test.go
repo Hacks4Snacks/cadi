@@ -151,8 +151,9 @@ func TestOfflineCLISelectsDependencyMode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", directory, "--offline"}, &stdout, &stderr); code != 0 {
+	if code := Run(context.Background(), []string{"scan", directory, "--offline", "--scan-report", reportPath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("offline CLI failed: %d %s", code, stderr.String())
 	}
 	var bom cdx.BOM
@@ -160,16 +161,12 @@ func TestOfflineCLISelectsDependencyMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, property := range *bom.Metadata.Properties {
-		if property.Name != "ciphertrail:collection" {
-			continue
-		}
-		var collection struct{ Properties []cdx.Property }
-		if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
-			t.Fatal(err)
-		}
-		for _, item := range collection.Properties {
-			found = found || item.Name == "ciphertrail:dependency-mode" && item.Value == "offline"
+	for _, collection := range readScanReport(t, reportPath).Collections {
+		for _, item := range collection.Details {
+			var mode string
+			if item.Name == "dependency-mode" && json.Unmarshal(item.Value, &mode) == nil {
+				found = found || mode == "offline"
+			}
 		}
 	}
 	if !found {
@@ -187,13 +184,16 @@ func TestGoScanRetainsActionableUnknownAPINotes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", directory}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", directory, "--scan-report", reportPath}, &stdout, &stderr)
 	if code != 0 || !strings.Contains(stderr.String(), "NOTE: main.go:3: cryptographic API not modeled: (crypto.Signer).Sign") {
 		t.Fatalf("unknown API was hidden: exit=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "cryptographic API not modeled") {
-		t.Fatal("unknown API was not persisted in the CBOM")
+	report := readScanReport(t, reportPath)
+	if len(report.Collections[0].Diagnostics) != 1 || !strings.Contains(report.Collections[0].Diagnostics[0].Message, "cryptographic API not modeled") ||
+		strings.Contains(stdout.String(), "cryptographic API not modeled") || !strings.Contains(stdout.String(), "analysis diagnostics were reported") {
+		t.Fatal("unknown API details were not separated from the compact CBOM qualification")
 	}
 }
 
@@ -257,8 +257,9 @@ func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", directory, "--exclude", "other_fixture.go", "--exclude", "unused_helpers"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", directory, "--exclude", "other_fixture.go", "--exclude", "unused_helpers", "--scan-report", reportPath}, &stdout, &stderr)
 	if code != 0 || (strings.Contains(stderr.String(), "NOTE:") || strings.Contains(stderr.String(), "ERROR:")) {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
@@ -271,7 +272,11 @@ func TestCLIExclusionsCombineWithSourceRootConfiguration(t *testing.T) {
 			t.Errorf("fixture leaked into CLI output: %s", component.Name)
 		}
 	}
-	if !strings.Contains(stdout.String(), "ciphertrail:source-exclusion-paths") || !strings.Contains(stdout.String(), "unused_helpers") {
+	reportData, err := json.Marshal(readScanReport(t, reportPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(reportData), "source-exclusion-paths") || !strings.Contains(string(reportData), "unused_helpers") {
 		t.Fatal("effective exclusion scope was not recorded")
 	}
 }

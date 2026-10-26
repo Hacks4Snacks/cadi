@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"ciphertrail/internal/input"
 	"ciphertrail/internal/inventory"
@@ -119,12 +118,10 @@ func (c Collector) Collect(ctx context.Context) (inventory.Result, error) {
 		stats.Findings = len(findingRefs[name])
 		if stats.Status != "failed" {
 			switch {
-			case stats.Skipped > 0 && stats.Findings == 0:
+			case stats.Skipped > 0:
 				stats.Status = "needs-rendering"
 			case recognizedFiles[name] > 0:
 				stats.Status = "completed"
-			case stats.Skipped > 0:
-				stats.Status = "needs-rendering"
 			default:
 				stats.Status = "not-applicable"
 				stats.Reason = "no recognized inputs"
@@ -132,8 +129,5 @@ func (c Collector) Collect(ctx context.Context) (inventory.Result, error) {
 		}
 		acquired.Coverage = append(acquired.Coverage, *stats)
 	}
-	acquired.Properties = append(acquired.Properties, cdx.Property{
-		Name: "ciphertrail:detectors", Value: strings.Join(names, ", "),
-	})
 	return acquired, errors.Join(err, ctx.Err())
 }

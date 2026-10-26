@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 
+	"ciphertrail/internal/inventory"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -83,7 +85,7 @@ func Discover(ctx context.Context, target string, options Options) (Selection, e
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if PathExcluded(selection.Root, path, selection.Exclusions) || options.Output != "" && path == options.Output {
+		if PathExcluded(selection.Root, path, selection.Exclusions) || slices.Contains(options.Outputs, path) {
 			omit(path, "excluded")
 			if entry.IsDir() {
 				return filepath.SkipDir
@@ -220,6 +222,9 @@ func generatedReport(root, path string) (bool, error) {
 		case "spdxVersion":
 			var version string
 			return json.Unmarshal(value, &version) == nil && strings.HasPrefix(version, "SPDX-"), nil
+		case "reportFormat":
+			var format string
+			return json.Unmarshal(value, &format) == nil && format == inventory.ScanReportFormat, nil
 		}
 	}
 	return false, nil

@@ -2,7 +2,6 @@ package scan
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -33,8 +32,14 @@ type pythonGroup struct {
 	inputs    int
 }
 
-func (o Options) prepare(ctx context.Context, output string, selected []string) (Plan, error) {
+func (o Options) prepare(ctx context.Context, outputs []string, selected []string) (Plan, error) {
 	var plan Plan
+	var excludedOutputs []string
+	for _, output := range outputs {
+		if path := canonicalOutput(output); path != "" {
+			excludedOutputs = append(excludedOutputs, path)
+		}
+	}
 	paths := slices.Clone(o.Paths)
 	for i := range paths {
 		paths[i] = canonical(paths[i])
@@ -51,9 +56,9 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 		plan.Inputs = append(plan.Inputs, path)
 		selection, err := scope.Discover(ctx, path, scope.Options{
 			Exclude: o.Exclude, IncludeNestedRepos: o.IncludeNestedRepos,
-			Output:       canonicalOutput(output),
+			Outputs:      excludedOutputs,
 			ClassifyHelm: slices.Contains(selected, "kubernetes"),
-			SkipReports:  slices.Contains(selected, "kubernetes") || slices.Contains(selected, "artifact"),
+			SkipReports:  true,
 		})
 		if selection.Target == "" {
 			selection.Target = path
@@ -166,11 +171,7 @@ func (o Options) prepare(ctx context.Context, output string, selected []string) 
 			Charts     []string         `json:"helmCharts,omitempty"`
 			Duplicates int              `json:"deduplicatedFiles,omitempty"`
 		}{selection.Exclusions, selection.Omissions, selection.Charts, item.duplicates}
-		encoded, err := json.Marshal(scopeInfo)
-		if err != nil {
-			return Plan{}, err
-		}
-		metadata.Metadata("scope", string(encoded))
+		metadata.Metadata("scope", scopeInfo)
 		var collectors []inventory.Collector
 		if slices.Contains(selected, "go") {
 			if len(selection.Modules) > 0 {

@@ -92,9 +92,11 @@ func parameter(component *cdx.Component, evidence *inventory.Evidence, name stri
 		evidence.Unresolved = append(evidence.Unresolved, name)
 		return
 	}
-	if name == "key-size-bits" && number > 0 && component.CryptoProperties.AlgorithmProperties != nil {
-		component.CryptoProperties.AlgorithmProperties.ParameterSetIdentifier = fmt.Sprint(number)
-		return
+	if a := component.CryptoProperties.AlgorithmProperties; a != nil && number > 0 {
+		if name == "key-size-bits" || name == "digest-size-bits" && a.AlgorithmFamily == "BLAKE2" {
+			a.ParameterSetIdentifier = fmt.Sprint(number)
+			return
+		}
 	}
 	inventory.Property(component, name, fmt.Sprint(number))
 }
@@ -142,26 +144,27 @@ func recognize(name string, call value, evidence *inventory.Evidence) (cdx.Compo
 	if strings.HasPrefix(name, "hashlib.") {
 		method := strings.TrimPrefix(name, "hashlib.")
 		if hash := hashName(method); hash != "" {
-			primitive := cdx.CryptoPrimitiveHash
-			if strings.HasPrefix(hash, "SHAKE") {
-				primitive = cdx.CryptoPrimitiveXOF
+			component, known := inventory.HashAlgorithm(hash)
+			if known && component.CryptoProperties.AlgorithmProperties.AlgorithmFamily == "BLAKE2" && supplied(call, -1, "digest_size") {
+				byteCountParameter(&component, evidence, "digest-size-bits", argument(call, -1, "digest_size"))
 			}
-			return algorithm(hash, primitive, ""), true
+			return component, known
 		}
 		switch method {
 		case "new":
 			hash := digest(argument(call, 0, "name"))
 			if hash == "" {
-				hash = "Hash configuration"
 				evidence.Unresolved = append(evidence.Unresolved, "algorithm")
+				return algorithm("Hash configuration", cdx.CryptoPrimitiveHash, cdx.CryptoFunctionDigest), true
 			}
-			primitive := cdx.CryptoPrimitiveHash
-			if strings.HasPrefix(hash, "SHAKE") {
-				primitive = cdx.CryptoPrimitiveXOF
+			component, known := inventory.HashAlgorithm(hash)
+			if known && component.CryptoProperties.AlgorithmProperties.AlgorithmFamily == "BLAKE2" && supplied(call, -1, "digest_size") {
+				byteCountParameter(&component, evidence, "digest-size-bits", argument(call, -1, "digest_size"))
 			}
-			return algorithm(hash, primitive, ""), true
+			return component, known
 		case "pbkdf2_hmac":
-			component := algorithm("PBKDF2", cdx.CryptoPrimitiveKDF, "")
+			component := algorithm("PBKDF2", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive)
+			component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = "PBKDF2"
 			if hash := digest(argument(call, 0, "hash_name")); hash != "" {
 				inventory.Property(&component, "hash", hash)
 			} else {
@@ -171,7 +174,7 @@ func recognize(name string, call value, evidence *inventory.Evidence) (cdx.Compo
 			byteCountParameter(&component, evidence, "derived-key-size-bits", argument(call, 4, "dklen"))
 			return component, true
 		case "scrypt":
-			component := algorithm("scrypt", cdx.CryptoPrimitiveKDF, "")
+			component := algorithm("scrypt", cdx.CryptoPrimitiveKDF, cdx.CryptoFunctionKeyderive)
 			for _, field := range []string{"n", "r", "p"} {
 				parameter(&component, evidence, field, argument(call, -1, field), false)
 			}
@@ -180,26 +183,24 @@ func recognize(name string, call value, evidence *inventory.Evidence) (cdx.Compo
 	}
 	switch name {
 	case "hmac.new", "hmac.HMAC", "hmac.digest":
-		label := "HMAC"
 		digestParameter := "digestmod"
 		if name == "hmac.digest" {
 			digestParameter = "digest"
 		}
-		if hash := digest(argument(call, 2, digestParameter)); hash != "" {
-			label += "-" + hash
-		} else {
+		hash := digest(argument(call, 2, digestParameter))
+		if hash == "" {
 			evidence.Unresolved = append(evidence.Unresolved, "hash")
 		}
-		component := algorithm(label, cdx.CryptoPrimitiveMAC, "")
+		component := inventory.HMACAlgorithm(hash)
 		parameter(&component, evidence, "key-size-bits", argument(call, 0, "key"), true)
 		return component, true
 	case "os.urandom", "secrets.token_bytes", "secrets.token_hex", "secrets.token_urlsafe", "ssl.RAND_bytes",
 		"Crypto.Random.get_random_bytes", "Cryptodome.Random.get_random_bytes":
-		component := algorithm("Cryptographic random generation", cdx.CryptoPrimitiveOther, "")
+		component := algorithm("Cryptographic random generation", cdx.CryptoPrimitiveOther, cdx.CryptoFunctionGenerate)
 		parameter(&component, evidence, "random-bytes", argument(call, 0, "nbytes"), false)
 		return component, true
 	case "secrets.randbelow", "secrets.randbits", "secrets.choice":
-		return algorithm("Cryptographic random generation", cdx.CryptoPrimitiveOther, ""), true
+		return algorithm("Cryptographic random generation", cdx.CryptoPrimitiveOther, cdx.CryptoFunctionGenerate), true
 	}
 	if strings.HasPrefix(name, "ssl.") {
 		return sslCall(name, call, evidence)

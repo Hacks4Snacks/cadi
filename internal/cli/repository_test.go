@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"ciphertrail/internal/inventory"
 	"ciphertrail/internal/testutil"
 
 	cdx "github.com/CycloneDX/cyclonedx-go"
@@ -64,8 +63,9 @@ func TestRepositoryWithoutGoHasExplicitCoverage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "certificate.yaml"), []byte("apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: {name: example}\nspec: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"scan", root}, &stdout, &stderr); code != 0 {
+	if code := Run(context.Background(), []string{"scan", root, "--scan-report", reportPath}, &stdout, &stderr); code != 0 {
 		t.Fatalf("non-Go repository failed: %d %s", code, stderr.String())
 	}
 	var bom cdx.BOM
@@ -73,14 +73,7 @@ func TestRepositoryWithoutGoHasExplicitCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	for _, property := range *bom.Metadata.Properties {
-		if property.Name != "ciphertrail:collection" {
-			continue
-		}
-		var collection struct{ Coverage []inventory.Coverage }
-		if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
-			t.Fatal(err)
-		}
+	for _, collection := range readScanReport(t, reportPath).Collections {
 		for _, coverage := range collection.Coverage {
 			found = found || coverage.Analyzer == "go" && coverage.Status == "not-applicable"
 		}
@@ -98,9 +91,10 @@ func TestOverlappingInputsDoNotRepeatModuleOrFileAnalysis(t *testing.T) {
 	writeRepositoryFile(t, root, "child/main.go", "package example\nimport \"crypto/sha512\"\nfunc Run() { _ = sha512.Sum512(nil) }\n")
 	_, _, certificate, _ := testutil.Identity(t)
 	writeRepositoryFile(t, root, "cert.pem", string(certificate))
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"scan", root, root, filepath.Join(root, "child"),
-		filepath.Join(root, "cert.pem"), "--offline"}, &stdout, &stderr)
+		filepath.Join(root, "cert.pem"), "--offline", "--scan-report", reportPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("overlapping scan failed: %d %s", code, stderr.String())
 	}
@@ -109,14 +103,7 @@ func TestOverlappingInputsDoNotRepeatModuleOrFileAnalysis(t *testing.T) {
 		t.Fatal(err)
 	}
 	modules, artifactFiles := 0, 0
-	for _, property := range *bom.Metadata.Properties {
-		if property.Name != "ciphertrail:collection" {
-			continue
-		}
-		var collection struct{ Coverage []inventory.Coverage }
-		if err := json.Unmarshal([]byte(property.Value), &collection); err != nil {
-			t.Fatal(err)
-		}
+	for _, collection := range readScanReport(t, reportPath).Collections {
 		for _, c := range collection.Coverage {
 			modules += c.Modules
 			if c.Analyzer == "artifact" {
@@ -166,10 +153,16 @@ func TestHelmDiscoveryProducesOnePreparationSummary(t *testing.T) {
 	for _, name := range []string{"one.yaml", "two.yaml", "_helpers.tpl"} {
 		writeRepositoryFile(t, root, "chart/templates/"+name, "{{ unrendered template }}")
 	}
+	reportPath := filepath.Join(t.TempDir(), "scan.json")
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"scan", root, "--offline"}, &stdout, &stderr)
+	code := Run(context.Background(), []string{"scan", root, "--offline", "--scan-report", reportPath}, &stdout, &stderr)
+	reportData, err := json.Marshal(readScanReport(t, reportPath))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if code != 0 || !strings.Contains(stderr.String(), "kubernetes=needs-rendering") ||
-		strings.Contains(stderr.String(), "NOTE:") || !strings.Contains(stdout.String(), "helmCharts") {
+		strings.Contains(stderr.String(), "NOTE:") || !strings.Contains(string(reportData), "helmCharts") ||
+		!strings.Contains(stdout.String(), "rendered inputs required") {
 		t.Fatalf("Helm preparation was hidden or noisy: %d %s", code, stderr.String())
 	}
 }

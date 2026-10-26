@@ -79,7 +79,6 @@ func (r resource) encryption(node *yaml.Node) error {
 			failures = errors.Join(failures, r.encryptionKeys(configuration, field+"/"+name, algorithmRef, index == 0))
 		}
 	}
-	r.result.Metadata("encryption-analysis-scope", "configured provider and key order only; symmetric key values are not inspected, hashed, retrieved, or validated; stored data and migration state are not observed")
 	return failures
 }
 

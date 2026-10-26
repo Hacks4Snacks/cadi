@@ -306,11 +306,11 @@ func TestOfflineLoadErrorsAreGroupedWithDetailedMetadata(t *testing.T) {
 		!strings.Contains(err.Error(), "go mod download") || strings.Contains(err.Error(), "kind 1") || strings.Contains(err.Error(), "\n") {
 		t.Fatalf("unhelpful or ungrouped loader error: %v", err)
 	}
-	if len(result.Properties) != 1 || result.Properties[0].Name != "ciphertrail:package-load-errors" {
+	if len(result.Details) != 1 || result.Details[0].Name != "package-load-errors" {
 		t.Fatal("detailed package errors were not retained")
 	}
 	var details []loadProblem
-	if err := json.Unmarshal([]byte(result.Properties[0].Value), &details); err != nil {
+	if err := json.Unmarshal(result.Details[0].Value, &details); err != nil {
 		t.Fatal(err)
 	}
 	if len(details) != 3 {
@@ -439,9 +439,9 @@ func TestNestedRepositoryBoundariesAndExplicitInclusion(t *testing.T) {
 		}
 		if !include {
 			recorded := false
-			for _, property := range result.Properties {
-				recorded = recorded || property.Name == "ciphertrail:excluded-nested-repositories" &&
-					strings.Contains(property.Value, "checkout") && strings.Contains(property.Value, "worktree")
+			for _, property := range result.Details {
+				recorded = recorded || property.Name == "excluded-nested-repositories" &&
+					strings.Contains(string(property.Value), "checkout") && strings.Contains(string(property.Value), "worktree")
 			}
 			if !recorded {
 				t.Fatal("nested repository exclusions were not recorded")

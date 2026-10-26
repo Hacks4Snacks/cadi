@@ -24,11 +24,10 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 	if strings.HasPrefix(short, "hashes.") {
 		hash := hashName(strings.TrimPrefix(short, "hashes."))
 		if hash != "" {
-			primitive := cdx.CryptoPrimitiveHash
-			if strings.HasPrefix(hash, "SHAKE") {
-				primitive = cdx.CryptoPrimitiveXOF
+			component, known := inventory.HashAlgorithm(hash)
+			if !known {
+				return component, false
 			}
-			component := algorithm(hash, primitive, "")
 			if supplied(call, 0, "digest_size") {
 				byteCountParameter(&component, evidence, "digest-size-bits", argument(call, 0, "digest_size"))
 			}
@@ -37,14 +36,10 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 		if short == "hashes.Hash" {
 			hash = digest(argument(call, 0, "algorithm"))
 			if hash == "" {
-				hash = "Hash configuration"
 				evidence.Unresolved = append(evidence.Unresolved, "algorithm")
+				return algorithm("Hash configuration", cdx.CryptoPrimitiveHash, cdx.CryptoFunctionDigest), true
 			}
-			primitive := cdx.CryptoPrimitiveHash
-			if strings.HasPrefix(hash, "SHAKE") {
-				primitive = cdx.CryptoPrimitiveXOF
-			}
-			return algorithm(hash, primitive, ""), true
+			return inventory.HashAlgorithm(hash)
 		}
 	}
 	if strings.HasPrefix(short, "asymmetric.") {
@@ -60,6 +55,11 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 			return cdx.Component{}, false
 		}
 		component := algorithm(label, cdx.CryptoPrimitiveAE, operation(method))
+		a := component.CryptoProperties.AlgorithmProperties
+		a.AlgorithmFamily = "AES"
+		if class == "ChaCha20Poly1305" {
+			a.AlgorithmFamily = "ChaCha20"
+		}
 		switch class {
 		case "AESGCM":
 			component.CryptoProperties.AlgorithmProperties.Mode = cdx.CryptoAlgorithmModeGCM
@@ -78,24 +78,34 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 		default:
 			parameter(&component, evidence, "key-size-bits", argument(receiver(call), 0, "key"), true)
 		}
+		if a.AlgorithmFamily == "AES" {
+			component.CryptoProperties.OID = inventory.AESOID(a.Mode, a.ParameterSetIdentifier)
+		}
 		return component, true
 	}
 	if strings.HasPrefix(short, "ciphers.algorithms.") {
 		class := strings.TrimPrefix(short, "ciphers.algorithms.")
 		primitive := cdx.CryptoPrimitiveBlockCipher
-		label := class
+		label, family := class, class
 		switch class {
 		case "AES", "AES128", "AES256":
-			label = "AES"
+			label, family = "AES", "AES"
 		case "TripleDES":
-			label = "3DES"
-		case "ChaCha20", "ARC4":
+			label, family = "3DES", "3DES"
+		case "ChaCha20":
 			primitive = cdx.CryptoPrimitiveStreamCipher
-		case "Camellia", "Blowfish", "CAST5", "IDEA", "SEED", "SM4":
+		case "ARC4":
+			primitive, family = cdx.CryptoPrimitiveStreamCipher, "RC4"
+		case "Camellia":
+			family = "CAMELLIA"
+		case "Blowfish", "CAST5", "IDEA", "SEED":
+		case "SM4":
+			family = ""
 		default:
 			return cdx.Component{}, false
 		}
 		component := algorithm(label, primitive, "")
+		component.CryptoProperties.AlgorithmProperties.AlgorithmFamily = family
 		parameter(&component, evidence, "key-size-bits", argument(call, 0, "key"), true)
 		return component, true
 	}
@@ -111,7 +121,7 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 		component := algorithm("Cipher operation", cdx.CryptoPrimitiveOther, operation(strings.TrimSuffix(strings.TrimPrefix(short, "ciphers.Cipher."), "or")))
 		constructor := receiver(call)
 		alg := argument(constructor, 0, "algorithm")
-		if alg.Kind == "call" {
+		if alg.Kind == "call" && strings.HasPrefix(symbol(alg.Base), primitives+"ciphers.algorithms.") {
 			if inner, known := cryptographyCall(symbol(alg.Base), alg, evidence); known {
 				component = inner
 				component.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{operation(strings.TrimSuffix(strings.TrimPrefix(short, "ciphers.Cipher."), "or"))}
@@ -126,6 +136,10 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 				component.CryptoProperties.AlgorithmProperties.Primitive = merged.CryptoProperties.AlgorithmProperties.Primitive
 			}
 		}
+		a := component.CryptoProperties.AlgorithmProperties
+		if a.AlgorithmFamily == "AES" {
+			component.CryptoProperties.OID = inventory.AESOID(a.Mode, a.ParameterSetIdentifier)
+		}
 		return component, true
 	}
 	if short == "hmac.HMAC" || short == "hmac.HMAC.verify" {
@@ -134,13 +148,14 @@ func cryptographyCall(name string, call value, evidence *inventory.Evidence) (cd
 		if short == "hmac.HMAC.verify" {
 			constructor, function = receiver(call), cdx.CryptoFunctionVerify
 		}
-		label := "HMAC"
-		if hash := digest(argument(constructor, 1, "algorithm")); hash != "" {
-			label += "-" + hash
-		} else {
+		hash := digest(argument(constructor, 1, "algorithm"))
+		if hash == "" {
 			evidence.Unresolved = append(evidence.Unresolved, "hash")
 		}
-		component := algorithm(label, cdx.CryptoPrimitiveMAC, function)
+		component := inventory.HMACAlgorithm(hash)
+		if function != "" {
+			component.CryptoProperties.AlgorithmProperties.CryptoFunctions = &[]cdx.CryptoFunction{function}
+		}
 		parameter(&component, evidence, "key-size-bits", argument(constructor, 0, "key"), true)
 		return component, true
 	}
