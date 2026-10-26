@@ -76,32 +76,6 @@ for Action updates weekly.
 Only pushes to the repository's configured default branch manage releases.
 The branch name and repository owner are not hard-coded.
 
-### Before enabling publication
-
-1. Create/connect the GitHub repository and choose its default branch. This
-   checkout initially has no remote; no hosted settings are changed by these
-   files.
-2. Choose and add a project `LICENSE` before public distribution. The existing
-   CycloneDX schema license applies to those upstream files, not to CADI
-   as a whole. Review dependency license/notice obligations and ensure generated
-   scan reports and local operational data are not accidentally committed.
-3. Enable Actions and **Settings > Actions > General > Allow GitHub Actions to
-   create and approve pull requests**, subject to organization policy.
-4. Recommended: add a repository secret named `RELEASE_PLEASE_TOKEN` containing
-   a fine-grained PAT limited to this repository, with **Contents**, **Issues**,
-   and **Pull requests** read/write permissions. A suitable GitHub App
-   installation token can also be supplied, but must be refreshed by your own
-   token-minting automation rather than stored as a long-lived secret.
-5. Enable squash merging and use Conventional Commit PR titles. Require the CI
-   `Go checks` matrix checks in branch protection or a ruleset before merging.
-   These workflows do not enable auto-merge or bypass reviews.
-
-Without `RELEASE_PLEASE_TOKEN`, release-please uses `GITHUB_TOKEN`. That can
-create release PRs and releases, but its PR events do not trigger CI. If required
-checks are enabled, manually run the **CI** workflow against the release PR
-branch, or configure the dedicated token. Asset publication runs in the same
-workflow as release-please, so it does not depend on a token-generated tag or
-release event triggering another workflow.
 
 ### Versioning and normal releases
 

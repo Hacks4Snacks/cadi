@@ -1,6 +1,6 @@
 module cadi
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/CycloneDX/cyclonedx-go v0.12.0

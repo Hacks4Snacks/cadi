@@ -50,8 +50,8 @@ with the [scanning guide](docs/scanning.md).
 ## Releases
 
 Release automation prepares versioned binaries for Linux, macOS, and Windows on
-amd64 and arm64, with SHA-256 checksums. Archives include the documentation and
-the bundled CycloneDX schema license and attribution. Python and Go analysis
+amd64 and arm64, with SHA-256 checksums. Archives include the project license,
+documentation, and bundled CycloneDX schema license and attribution. Python and Go analysis
 still need their respective local runtimes; see the [scanning guide](docs/scanning.md#build-and-run).
 
 See [release setup and maintainer workflow](docs/development.md#release-automation)
@@ -80,3 +80,8 @@ operational metadata and should be handled accordingly.
 Go analysis may download missing dependencies through your existing Go settings.
 Use `--offline` for cache-only scans. CADI does not score risk, enforce
 cryptographic policy, claim compliance, or remediate findings.
+
+## License
+
+CADI is licensed under the [MIT License](LICENSE). Third-party components retain
+their respective licenses and attribution requirements.
